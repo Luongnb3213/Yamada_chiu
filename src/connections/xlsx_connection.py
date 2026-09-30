@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import zipfile
 import zlib
 from contextlib import contextmanager
@@ -154,22 +155,53 @@ def excel_write_lock(xlsx_path: str | Path):
     lock_path = path.parent / f".{path.name}.write.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+")
+    locked_by = ""
     try:
-        try:
-            import fcntl
+        if os.name == "nt":
+            import msvcrt
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        except Exception:
-            _FALLBACK_XLSX_LOCK.acquire()
+            deadline = time.monotonic() + 300
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked_by = "msvcrt"
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timeout waiting for Excel write lock: {lock_path}")
+                    time.sleep(0.2)
+        else:
+            try:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                locked_by = "fcntl"
+            except Exception:
+                _FALLBACK_XLSX_LOCK.acquire()
+                locked_by = "thread"
         yield
     finally:
         try:
-            import fcntl
+            if locked_by == "msvcrt":
+                import msvcrt
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            elif locked_by == "fcntl":
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            elif locked_by == "thread":
+                _FALLBACK_XLSX_LOCK.release()
         except Exception:
-            _FALLBACK_XLSX_LOCK.release()
-        handle.close()
+            if locked_by == "thread":
+                try:
+                    _FALLBACK_XLSX_LOCK.release()
+                except RuntimeError:
+                    pass
+        finally:
+            handle.close()
 
 
 def repair_xlsx_crc(corrupted_file_path: str, output_file_path: str) -> None:

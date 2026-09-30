@@ -731,9 +731,16 @@ def write_crane_assignment(
             ws.cell(row=row_number, column=col_map["frida_device_id"], value=device_id)
             ws.cell(row=row_number, column=col_map["frida_device_name"], value=device_name)
 
-            tmp = xlsx_path.with_name(f"{xlsx_path.stem}.{os.getpid()}.tmp.xlsx")
-            wb.save(tmp)
-            tmp.replace(xlsx_path)
+            tmp = xlsx_path.with_name(f".{xlsx_path.stem}.{os.getpid()}.{time.time_ns()}.tmp.xlsx")
+            try:
+                wb.save(tmp)
+                tmp.replace(xlsx_path)
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass
             return {
                 "xlsx": str(xlsx_path),
                 "sheet": ws.title,
@@ -794,6 +801,9 @@ def ensure_row(args: argparse.Namespace) -> dict:
     record, row_number, sheet_name = load_row(xlsx_path, args.sheet, args.row, args.email)
     profile = profile_from_record(record)
     existing_id = (args.container_id or profile.get("crane_container_id") or "").strip()
+    if args.container_mode == "create":
+        existing_id = ""
+        profile.pop("crane_container_name", None)
     row_device_id = str(record.get("frida_device_id") or "").strip()
     requested_device_id = str(args.device_id or "").strip()
     if row_device_id and requested_device_id != row_device_id:

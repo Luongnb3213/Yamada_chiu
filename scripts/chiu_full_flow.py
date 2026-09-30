@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,11 +23,22 @@ from src.connections.xlsx_connection import excel_write_lock  # noqa: E402
 from chiu_profile_from_excel import load_row, profile_from_record, write_profile_js  # noqa: E402
 
 
+EMAIL_OTP_PROCESS_TIMEOUT_SECONDS = 120
+
+
+class FlowResultError(RuntimeError):
+    def __init__(self, message: str, *, gold_status: str = "", chiu_status: str = "", notes: str = "") -> None:
+        super().__init__(message)
+        self.gold_status = gold_status
+        self.chiu_status = chiu_status
+        self.notes = notes
+
+
 def quote_cmd(cmd: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in cmd)
 
 
-def run_cmd_output(cmd: list[str], title: str, stream: bool = False) -> str:
+def run_cmd_output(cmd: list[str], title: str, stream: bool = False, timeout: int | None = None) -> str:
     print(f"\n--- {title} ---", flush=True)
     print("$ " + quote_cmd(cmd), flush=True)
     proc = subprocess.Popen(
@@ -38,13 +50,20 @@ def run_cmd_output(cmd: list[str], title: str, stream: bool = False) -> str:
         bufsize=1,
     )
     assert proc.stdout is not None
-    lines: list[str] = []
-    for line in proc.stdout:
-        lines.append(line)
+    try:
+        output, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        output, _ = proc.communicate()
+        if output.strip():
+            print(output.strip(), flush=True)
+        raise RuntimeError(f"{title} quá timeout {timeout}s.") from exc
+
+    lines = output.splitlines(keepends=True)
+    for line in lines:
         if stream:
             print(line, end="", flush=True)
-    code = proc.wait()
-    output = "".join(lines)
+    code = proc.returncode
     if code != 0:
         if not stream and output.strip():
             print(output.strip(), flush=True)
@@ -170,6 +189,7 @@ def fetch_login_otp(xlsx: Path, sheet_name: str, row: int) -> str:
             str(row),
         ],
         "Lấy OTP login từ email",
+        timeout=EMAIL_OTP_PROCESS_TIMEOUT_SECONDS,
     )
     result = parse_json_from_output(output)
     if not isinstance(result, dict):
@@ -203,14 +223,63 @@ def ensure_status_headers(ws) -> dict[str, int]:
     if not any(headers):
         headers = ["email", "status", "error_details"]
         ws.append(headers)
-    for header in ("gold_status", "chiu_status", "status", "error_details", "notes"):
+    for header in (
+        "crane_container_id",
+        "crane_container_name",
+        "crane_status",
+        "crane_assigned_at",
+        "crane_last_used_at",
+        "frida_device_id",
+        "frida_device_name",
+        "gold_status",
+        "chiu_status",
+        "status",
+        "error_details",
+        "notes",
+    ):
         if header not in headers:
             ws.cell(row=1, column=len(headers) + 1, value=header)
             headers.append(header)
     return {header: index + 1 for index, header in enumerate(headers) if header}
 
 
-def write_row_status(
+def atomic_save_workbook(wb, xlsx: Path) -> None:
+    tmp = xlsx.with_name(f".{xlsx.stem}.{os.getpid()}.{time.time_ns()}.tmp.xlsx")
+    try:
+        wb.save(tmp)
+        tmp.replace(xlsx)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+
+
+def append_run_event(args: argparse.Namespace, stage: str, **payload: Any) -> None:
+    event_path = (
+        Path(str(args.event_log)).expanduser()
+        if getattr(args, "event_log", "")
+        else ROOT_DIR / "agents" / "runtime" / "chiu_row_progress.jsonl"
+    )
+    try:
+        event_path.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "stage": stage,
+            "xlsx": str(Path(args.xlsx).expanduser()),
+            "sheet": args.sheet,
+            "row": args.row,
+            "device_id": args.device_id,
+            **payload,
+        }
+        with event_path.open("a") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def write_row_result(
     xlsx: Path,
     sheet_name: str,
     row: int,
@@ -220,6 +289,7 @@ def write_row_status(
     gold_status: str = "",
     chiu_status: str = "",
     notes: str = "",
+    crane_result: dict | None = None,
 ) -> None:
     with excel_write_lock(xlsx):
         lock_path = xlsx.parent / f".~lock.{xlsx.name}#"
@@ -230,17 +300,32 @@ def write_row_status(
         try:
             ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
             col = ensure_status_headers(ws)
-            ws.cell(row=row, column=col["status"], value=status)
-            ws.cell(row=row, column=col["error_details"], value=error_details)
-            if gold_status:
-                ws.cell(row=row, column=col["gold_status"], value=gold_status)
-            if chiu_status:
-                ws.cell(row=row, column=col["chiu_status"], value=chiu_status)
-            if notes:
-                ws.cell(row=row, column=col["notes"], value=notes)
-            tmp = xlsx.with_name(f"{xlsx.stem}.{os.getpid()}.tmp.xlsx")
-            wb.save(tmp)
-            tmp.replace(xlsx)
+            crane = crane_result or {}
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            values = {
+                "status": status,
+                "error_details": error_details,
+                "gold_status": gold_status,
+                "chiu_status": chiu_status,
+                "notes": notes,
+                "crane_container_id": crane.get("crane_container_id") or crane.get("active_container_id") or "",
+                "crane_container_name": crane.get("crane_container_name") or crane.get("active_container_name") or "",
+                "crane_status": "ASSIGNED" if crane else "",
+                "crane_assigned_at": now if crane else "",
+                "crane_last_used_at": now if crane else "",
+                "frida_device_id": crane.get("frida_device_id") or "",
+                "frida_device_name": crane.get("frida_device_name") or "",
+            }
+            for key, value in values.items():
+                if key in ("gold_status", "chiu_status", "notes") and value in (None, ""):
+                    continue
+                if key.startswith("crane_") or key.startswith("frida_"):
+                    if value in (None, ""):
+                        continue
+                    if key == "crane_assigned_at" and ws.cell(row=row, column=col[key]).value:
+                        continue
+                ws.cell(row=row, column=col[key], value=value)
+            atomic_save_workbook(wb, xlsx)
         finally:
             wb.close()
 
@@ -287,6 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=40)
     parser.add_argument("--flow-complete-delay-ms", type=int, default=2000)
     parser.add_argument("--gold-payment-wait-timeout-ms", type=int, default=60000)
+    parser.add_argument("--event-log", default="", help="JSONL progress file for deferred/batch recovery.")
+    parser.add_argument("--defer-excel-write", action="store_true", help="Write progress to --event-log only; batch merges Excel at the end.")
     return parser
 
 
@@ -317,6 +404,7 @@ def main() -> int:
         safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.device_id or "auto")[:48]
         profile_js = ROOT_DIR / "agents" / "runtime" / f"current_profile_{safe_device}_r{args.row}_{os.getpid()}.js"
     args.profile_js = str(profile_js)
+    crane_result: dict = {}
 
     try:
         crane_cmd = [
@@ -328,11 +416,16 @@ def main() -> int:
             args.device_id,
             "--container-mode",
             args.container_mode,
+            "--no-write-excel",
         ]
         if args.no_reload:
             crane_cmd.append("--no-reload")
         crane_output = run_cmd_output(crane_cmd, "Chuẩn bị container")
         crane_result = parse_json_from_output(crane_output)
+        if not isinstance(crane_result, dict):
+            crane_result = {}
+        crane_result.setdefault("frida_device_id", args.device_id)
+        append_run_event(args, "crane", crane_result=crane_result)
         print(
             "[crane] container="
             f"{crane_result.get('crane_container_name') or crane_result.get('active_container_name') or crane_result.get('crane_container_label') or crane_result.get('active_container_label') or ''} "
@@ -378,40 +471,81 @@ def main() -> int:
 
         final_state = latest_state(dom_result)
         if final_state == "chiu_onepiece_submitted":
-            write_row_status(
-                xlsx,
-                args.sheet,
-                args.row,
-                "SUCCESS",
-                "",
+            append_run_event(
+                args,
+                "final",
+                status="SUCCESS",
+                error_details="",
                 gold_status="SUCCESS",
                 chiu_status="SUCCESS",
                 notes="gold_done; onepiece_lottery_submitted",
+                crane_result=crane_result,
             )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "SUCCESS",
+                    "",
+                    gold_status="SUCCESS",
+                    chiu_status="SUCCESS",
+                    notes="gold_done; onepiece_lottery_submitted",
+                    crane_result=crane_result,
+                )
         elif not args.no_submit and final_state in ("store_sale_tab", "ready_for_chiu_store_sale"):
-            write_row_status(
-                xlsx,
-                args.sheet,
-                args.row,
-                "FAILED",
-                f"Chưa submit One Piece: last_state={final_state}",
+            raise FlowResultError(
+                f"DOM chưa submit One Piece: last_state={final_state}",
                 gold_status="SUCCESS",
                 chiu_status="FAILED",
                 notes="gold_done; chiu_not_finished",
             )
-            raise RuntimeError(f"DOM chưa submit One Piece: last_state={final_state}")
         elif not args.no_submit:
             raise RuntimeError(f"DOM chưa submit One Piece: last_state={final_state}")
         else:
-            write_row_status(xlsx, args.sheet, args.row, "SUCCESS", "", notes=f"last_state={final_state}")
+            append_run_event(
+                args,
+                "final",
+                status="SUCCESS",
+                error_details="",
+                notes=f"last_state={final_state}",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(xlsx, args.sheet, args.row, "SUCCESS", "", notes=f"last_state={final_state}", crane_result=crane_result)
         print(f"\n[flow] Xong lượt chạy row {args.row} lúc {datetime.now():%Y-%m-%d %H:%M:%S}", flush=True)
         return 0
     except Exception as exc:
         message = str(exc)
-        if current_gold_status(xlsx, args.sheet, args.row) == "SUCCESS":
-            write_row_status(xlsx, args.sheet, args.row, "FAILED", message, chiu_status="FAILED")
-        else:
-            write_row_status(xlsx, args.sheet, args.row, "FAILED", message, gold_status="FAILED")
+        notes = getattr(exc, "notes", "")
+        gold_status = getattr(exc, "gold_status", "")
+        chiu_status = getattr(exc, "chiu_status", "")
+        if not gold_status and not chiu_status and current_gold_status(xlsx, args.sheet, args.row) == "SUCCESS":
+            chiu_status = "FAILED"
+        elif not gold_status and not chiu_status:
+            gold_status = "FAILED"
+        append_run_event(
+            args,
+            "final",
+            status="FAILED",
+            error_details=message,
+            gold_status=gold_status,
+            chiu_status=chiu_status,
+            notes=notes,
+            crane_result=crane_result,
+        )
+        if not args.defer_excel_write:
+            write_row_result(
+                xlsx,
+                args.sheet,
+                args.row,
+                "FAILED",
+                message,
+                gold_status=gold_status,
+                chiu_status=chiu_status,
+                notes=notes,
+                crane_result=crane_result,
+            )
         print(f"[flow] Lỗi: {message}", file=sys.stderr, flush=True)
         return 1
 

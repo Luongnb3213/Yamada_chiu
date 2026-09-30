@@ -4,11 +4,13 @@ import argparse
 import json
 import os
 import queue
+import random
 import shlex
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -19,7 +21,7 @@ DEFAULT_FRIDA_PYTHON = "/Users/macbook/Library/Application Support/pipx/venvs/fr
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.connections.xlsx_connection import normalize_status  # noqa: E402
+from src.connections.xlsx_connection import excel_write_lock, normalize_status  # noqa: E402
 from chiu_profile_from_excel import cell_text, normalize_header  # noqa: E402
 
 
@@ -30,6 +32,22 @@ STOP_ON_ERROR_HINTS = (
     "Không có CraneManager",
     "CraneManager unavailable",
     "Excel appears to be open/locked",
+)
+
+
+ROW_RESULT_COLUMNS = (
+    "crane_container_id",
+    "crane_container_name",
+    "crane_status",
+    "crane_assigned_at",
+    "crane_last_used_at",
+    "frida_device_id",
+    "frida_device_name",
+    "gold_status",
+    "chiu_status",
+    "status",
+    "error_details",
+    "notes",
 )
 
 
@@ -74,6 +92,7 @@ def runnable_rows(
         gold_status_pos = headers.index("gold_status") if "gold_status" in headers else None
         chiu_status_pos = headers.index("chiu_status") if "chiu_status" in headers else None
         device_pos = headers.index("frida_device_id") if "frida_device_id" in headers else None
+        container_pos = headers.index("crane_container_id") if "crane_container_id" in headers else None
 
         selected: list[dict] = []
         for row_number, row in enumerate(rows, start=2):
@@ -91,9 +110,10 @@ def runnable_rows(
             if status not in ("", "PENDING", "FAILED") and gold_status not in ("", "PENDING", "FAILED"):
                 continue
             preferred_device = cell_text(row[device_pos]) if device_pos is not None and device_pos < len(row) else ""
-            if allowed_device_ids is not None and preferred_device not in allowed_device_ids:
+            if allowed_device_ids is not None and preferred_device and preferred_device not in allowed_device_ids:
                 continue
-            selected.append({"row": row_number, "device_id": preferred_device})
+            container_id = cell_text(row[container_pos]) if container_pos is not None and container_pos < len(row) else ""
+            selected.append({"row": row_number, "device_id": preferred_device, "container_id": container_id})
             if limit > 0 and len(selected) >= limit:
                 break
         return ws.title, selected
@@ -139,12 +159,19 @@ def list_usb_devices() -> list[dict]:
 
 def resolve_device_ids(value: str) -> list[str]:
     raw = (value or "auto").strip()
-    if raw.lower() in ("all", "*", "tat-ca", "tất-cả"):
+    lowered = raw.lower()
+    if lowered in ("all", "*", "tat-ca", "tất-cả"):
         devices = list_usb_devices()
         ids = [str(device.get("id") or "").strip() for device in devices if device.get("id")]
         if not ids:
             raise RuntimeError("Không thấy iPhone USB nào qua Frida.")
         return ids
+    if lowered == "auto":
+        devices = list_usb_devices()
+        ids = [str(device.get("id") or "").strip() for device in devices if device.get("id")]
+        if not ids:
+            raise RuntimeError("Không thấy iPhone USB nào qua Frida.")
+        return [random.choice(ids)]
     ids = [part.strip() for part in raw.split(",") if part.strip()]
     return ids or ["auto"]
 
@@ -153,6 +180,132 @@ def device_label(device_id: str) -> str:
     if device_id == "auto":
         return "auto"
     return device_id[:8]
+
+
+def safe_name(value: str) -> str:
+    text = "".join(char if char.isalnum() or char in "._-" else "_" for char in str(value or ""))
+    return text[:64] or "worker"
+
+
+def ensure_result_headers(ws) -> dict[str, int]:
+    headers = [str(cell.value or "").strip() for cell in ws[1]]
+    for header in ROW_RESULT_COLUMNS:
+        if header not in headers:
+            ws.cell(row=1, column=len(headers) + 1, value=header)
+            headers.append(header)
+    return {header: index + 1 for index, header in enumerate(headers) if header}
+
+
+def atomic_save_workbook(wb, xlsx: Path) -> None:
+    tmp = xlsx.with_name(f".{xlsx.stem}.chiumerge.{os.getpid()}.{time.time_ns()}.tmp.xlsx")
+    try:
+        wb.save(tmp)
+        tmp.replace(xlsx)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+
+
+def collect_run_events(run_dir: Path) -> dict[tuple[str, int], dict]:
+    records: dict[tuple[str, int], dict] = {}
+    for path in sorted(run_dir.glob("*.jsonl")):
+        with path.open("r") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sheet = str(event.get("sheet") or "")
+                try:
+                    row = int(event.get("row") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if not sheet or row <= 0:
+                    continue
+                key = (sheet, row)
+                current = records.setdefault(
+                    key,
+                    {
+                        "sheet": sheet,
+                        "row": row,
+                        "device_id": str(event.get("device_id") or ""),
+                        "crane_result": {},
+                    },
+                )
+                stage = str(event.get("stage") or "")
+                if event.get("device_id"):
+                    current["device_id"] = str(event.get("device_id") or "")
+                if isinstance(event.get("crane_result"), dict):
+                    current["crane_result"] = event["crane_result"]
+                if stage == "final":
+                    current["status"] = str(event.get("status") or "FAILED").strip().upper()
+                    current["error_details"] = str(event.get("error_details") or "")
+                    current["gold_status"] = str(event.get("gold_status") or "")
+                    current["chiu_status"] = str(event.get("chiu_status") or "")
+                    current["notes"] = str(event.get("notes") or "")
+                    current["final_seen"] = True
+    return records
+
+
+def merge_run_events_to_excel(xlsx: Path, run_dir: Path, default_sheet: str) -> tuple[int, int]:
+    records = collect_run_events(run_dir)
+    if not records:
+        return 0, 0
+    merged = 0
+    partial = 0
+    with excel_write_lock(xlsx):
+        lock_path = xlsx.parent / f".~lock.{xlsx.name}#"
+        if lock_path.exists():
+            raise RuntimeError(f"Excel appears to be open/locked: {lock_path}. Đóng file rồi chạy lại.")
+        wb = openpyxl.load_workbook(xlsx)
+        try:
+            for (sheet_name, row), record in sorted(records.items(), key=lambda item: (item[0][0], item[0][1])):
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                elif default_sheet in wb.sheetnames:
+                    ws = wb[default_sheet]
+                else:
+                    ws = choose_sheet(wb, default_sheet)
+                col = ensure_result_headers(ws)
+                crane = record.get("crane_result") or {}
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                values = {
+                    "crane_container_id": crane.get("crane_container_id") or crane.get("active_container_id") or "",
+                    "crane_container_name": crane.get("crane_container_name") or crane.get("active_container_name") or "",
+                    "crane_status": "ASSIGNED" if crane else "",
+                    "crane_assigned_at": now if crane else "",
+                    "crane_last_used_at": now if crane else "",
+                    "frida_device_id": crane.get("frida_device_id") or record.get("device_id") or "",
+                    "frida_device_name": crane.get("frida_device_name") or "",
+                }
+                if record.get("final_seen"):
+                    values["status"] = record.get("status") or "FAILED"
+                    values["error_details"] = record.get("error_details") or ""
+                    if record.get("gold_status"):
+                        values["gold_status"] = record.get("gold_status")
+                    if record.get("chiu_status"):
+                        values["chiu_status"] = record.get("chiu_status")
+                    if record.get("notes"):
+                        values["notes"] = record.get("notes")
+                    merged += 1
+                else:
+                    partial += 1
+                for key, value in values.items():
+                    if value in (None, "") and key not in ("error_details",):
+                        continue
+                    if key == "crane_assigned_at" and ws.cell(row=row, column=col[key]).value:
+                        continue
+                    ws.cell(row=row, column=col[key], value=value)
+            atomic_save_workbook(wb, xlsx)
+        finally:
+            wb.close()
+    return merged, partial
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -169,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-submit", action="store_true")
     parser.add_argument("--max-attempts", type=int, default=2, help="Max attempts per row, including the first run.")
     parser.add_argument("--list-only", action="store_true")
+    parser.add_argument("--direct-excel-write", action="store_true", help="Old mode: each worker writes Excel after every row.")
+    parser.add_argument("--merge-run-dir", default="", help="Merge a previous batch run_dir JSONL into Excel, then exit.")
     return parser
 
 
@@ -184,13 +339,22 @@ def main() -> int:
     if args.max_attempts < 1:
         print("[batch] max-attempts phải >= 1.", file=sys.stderr, flush=True)
         return 1
+    if args.merge_run_dir:
+        try:
+            merged, partial = merge_run_events_to_excel(xlsx, Path(args.merge_run_dir).expanduser(), args.sheet)
+            print(f"[batch] Đã merge {merged} final row vào Excel. Partial/no-final={partial}.", flush=True)
+            return 0
+        except Exception as exc:
+            print(f"[batch] Merge run_dir lỗi: {exc}", file=sys.stderr, flush=True)
+            return 1
     try:
         device_ids = resolve_device_ids(args.device_id)
     except Exception as exc:
         print(f"[batch] {exc}", file=sys.stderr, flush=True)
         return 1
 
-    allowed_device_ids = None if is_auto_device_selection(args.device_id) else set(device_ids)
+    requested_device = (args.device_id or "auto").strip().lower()
+    allowed_device_ids = None if requested_device in ("all", "*", "tat-ca", "tất-cả") else set(device_ids)
     sheet, tasks = runnable_rows(xlsx, args.sheet, args.limit, allowed_device_ids)
     print(f"[batch] Sheet={sheet} | số nick={'full' if args.limit == 0 else args.limit} | chọn {len(tasks)} row", flush=True)
     print(f"[batch] Devices: {', '.join(device_ids)}", flush=True)
@@ -213,6 +377,10 @@ def main() -> int:
     result_lock = threading.Lock()
     stop_all = threading.Event()
     total_tasks = len(tasks)
+    run_dir = ROOT_DIR / "agents" / "runtime" / "batch_runs" / f"{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}"
+    if not args.direct_excel_write:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[batch] Deferred Excel write: worker logs ở {run_dir}", flush=True)
     task_queues: dict[str, queue.Queue[dict]] = {device_id: queue.Queue() for device_id in device_ids}
     queued_per_device = {device_id: 0 for device_id in device_ids}
     rr = 0
@@ -224,7 +392,11 @@ def main() -> int:
             target = device_ids[rr % len(device_ids)]
             rr += 1
         queued_task = dict(task)
-        queued_task["container_mode"] = "active-then-create" if queued_per_device[target] == 0 else "create"
+        queued_task["container_mode"] = (
+            "active-then-create"
+            if task.get("container_id") or queued_per_device[target] == 0
+            else "create"
+        )
         queued_per_device[target] += 1
         task_queues[target].put(queued_task)
 
@@ -255,6 +427,12 @@ def main() -> int:
             "--container-mode",
             container_mode,
         ]
+        if not args.direct_excel_write:
+            cmd.extend([
+                "--defer-excel-write",
+                "--event-log",
+                str(run_dir / f"{safe_name(device_id)}.jsonl"),
+            ])
         if args.no_reload:
             cmd.append("--no-reload")
         if args.no_submit:
@@ -328,6 +506,16 @@ def main() -> int:
         thread.start()
     for thread in threads:
         thread.join()
+
+    if not args.direct_excel_write:
+        try:
+            merged, partial = merge_run_events_to_excel(xlsx, run_dir, sheet)
+            print(f"\n[batch] Đã ghi Excel cuối batch: {merged} row final | partial/no-final={partial}", flush=True)
+            print(f"[batch] Run log giữ tại: {run_dir}", flush=True)
+        except Exception as exc:
+            print(f"\n[batch] Lỗi merge Excel cuối batch: {exc}", file=sys.stderr, flush=True)
+            print(f"[batch] Data tạm vẫn còn ở: {run_dir}", file=sys.stderr, flush=True)
+            return 1
 
     if failures:
         detail = ", ".join(f"row {row}: exit {code}" for row, code in failures[:10])
