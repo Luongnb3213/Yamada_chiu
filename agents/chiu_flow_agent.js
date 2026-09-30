@@ -231,6 +231,29 @@ function pageProgram(profile, options, mode) {
     el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
     return true;
   }
+  function tapElement(el) {
+    if (!el) return false;
+    if (options.submit === false || options.dryRun) return true;
+    try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+    const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 1, height: 1 };
+    const x = Math.round(rect.left + Math.max(1, rect.width) / 2);
+    const y = Math.round(rect.top + Math.max(1, rect.height) / 2);
+    const mouseOpts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+    try {
+      if (typeof PointerEvent === "function") {
+        el.dispatchEvent(new PointerEvent("pointerdown", Object.assign({ pointerId: 1, pointerType: "touch", isPrimary: true }, mouseOpts)));
+        el.dispatchEvent(new PointerEvent("pointerup", Object.assign({ pointerId: 1, pointerType: "touch", isPrimary: true }, mouseOpts)));
+      }
+    } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent("mousedown", mouseOpts)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent("mouseup", mouseOpts)); } catch (e) {}
+    if (typeof el.click === "function") {
+      el.click();
+    } else {
+      el.dispatchEvent(new MouseEvent("click", mouseOpts));
+    }
+    return true;
+  }
   function navigateElement(el) {
     if (!el) return false;
     const href = String(el.getAttribute && el.getAttribute("href") || el.href || "").trim();
@@ -255,6 +278,42 @@ function pageProgram(profile, options, mode) {
     if (typeof form.requestSubmit === "function") form.requestSubmit();
     else form.submit();
     return true;
+  }
+  function submitCreditPaymentForm() {
+    const form = document.creditFepChargePaymentInfoEntryActionForm || q('form[name="creditFepChargePaymentInfoEntryActionForm"]') || q("form");
+    if (!form) return false;
+    if (options.submit === false || options.dryRun) return true;
+    if (typeof window.check === "function" && !window.check()) return false;
+    const link = qa("a").find(function (el) { return /^次へ$/.test(text(el)); });
+    const onclick = String(link && link.getAttribute("onclick") || "");
+    const actionMatch = onclick.match(/doSubmit\\([^,]+,\\s*['"]([^'"]+)['"]/);
+    const action = actionMatch ? actionMatch[1] : (form.getAttribute("action") || form.action || "");
+    if (typeof window.doSubmit === "function" && action) {
+      const beforeUrl = location.href;
+      window.doSubmit(form, action);
+      if (link) {
+        window.setTimeout(function () {
+          const stillOnCreditForm = location.href === beforeUrl && !!q('form[name="creditFepChargePaymentInfoEntryActionForm"]');
+          if (stillOnCreditForm) tapElement(link);
+        }, Number(options.creditSubmitFallbackDelayMs || 1200));
+      }
+      return true;
+    }
+    if (link && tapElement(link)) return true;
+    if (action) form.setAttribute("action", action);
+    return submitForm(form);
+  }
+  function flowCompleteDelayMs() {
+    const n = Number(options.flowCompleteDelayMs);
+    if (Number.isFinite(n) && n >= 0) return n;
+    return 2000;
+  }
+  function delayBeforeFlowComplete() {
+    if (options.submit === false || options.dryRun) return;
+    const ms = flowCompleteDelayMs();
+    if (!ms) return;
+    const until = Date.now() + ms;
+    while (Date.now() < until) {}
   }
   function clickSubmitValue(value) {
     const target = qa('input[type="submit"],button[type="submit"],input[type="button"],button').find(function (el) {
@@ -513,7 +572,16 @@ function pageProgram(profile, options, mode) {
       setSelect('select[name="ccExpirationMonth"]', exp.month);
       setSelect('select[name="ccExpirationYear"]', exp.year);
       setField('input[name="securityCode"]', cvv);
-      clickText(/^次へ$/) || submitForm(q('form[name="creditFepChargePaymentInfoEntryActionForm"]') || q("form"));
+      const filled = {
+        ccNumber: q('input[name="ccNumber"]') && q('input[name="ccNumber"]').value,
+        month: q('select[name="ccExpirationMonth"]') && q('select[name="ccExpirationMonth"]').value,
+        year: q('select[name="ccExpirationYear"]') && q('select[name="ccExpirationYear"]').value,
+        cvv: q('input[name="securityCode"]') && q('input[name="securityCode"]').value
+      };
+      if (!filled.ccNumber || !filled.month || !filled.year || !filled.cvv) {
+        return JSON.stringify(fail(state, "card_fields_not_filled", filled));
+      }
+      if (!submitCreditPaymentForm()) return JSON.stringify(fail(state, "credit_payment_submit_failed", filled));
       return JSON.stringify(result(state, "fill_credit_card_and_next", { expMonth: exp.month, expYear: exp.year }));
     }
     case "gold_payment_confirm": {
@@ -552,8 +620,10 @@ function pageProgram(profile, options, mode) {
       return JSON.stringify(result(state, "confirm_onepiece_lottery_application"));
     }
     case "onepiece_lottery_complete":
+      delayBeforeFlowComplete();
       return JSON.stringify(result("chiu_onepiece_submitted", "onepiece_lottery_complete"));
     case "onepiece_lottery_already_applied":
+      delayBeforeFlowComplete();
       return JSON.stringify(result("chiu_onepiece_submitted", "onepiece_lottery_already_applied"));
     case "loading":
       return JSON.stringify(result(state, "wait_loading", { wait: true }));
@@ -598,7 +668,7 @@ async function runInternal(idx, profile, options) {
       continue;
     }
     history.push(res);
-    if (!res.ok || res.wait || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready") break;
+    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready") break;
     if (res.action === "done") break;
     const wait = await waitAfterActionInternal(idx || 0, res, opts);
     if (wait && (opts.includeWaits || !wait.ok)) history.push(wait);
@@ -636,12 +706,21 @@ async function waitAfterActionInternal(idx, previous, options) {
     "fill_onepiece_lottery_form_and_confirm",
     "confirm_onepiece_lottery_application"
   ].indexOf(previous && previous.action) >= 0;
+  const goldPaymentActions = [
+    "accept_gold_terms_and_apply",
+    "select_credit_card_payment",
+    "fill_credit_card_and_next",
+    "confirm_gold_payment"
+  ];
+  const timeoutMs = goldPaymentActions.indexOf(previous && previous.action) >= 0
+    ? Number(opts.goldPaymentWaitTimeoutMs || opts.paymentWaitTimeoutMs || opts.waitTimeoutMs || 15000)
+    : Number(opts.waitTimeoutMs || 15000);
   let lastKey = "";
   let stableCount = 0;
   let latest = null;
 
   await sleep(Math.max(0, Number(opts.delayMs || 0)));
-  while (Date.now() - start < Number(opts.waitTimeoutMs || 15000)) {
+  while (Date.now() - start < timeoutMs) {
     latest = await screenInternal(idx || 0);
     const key = [latest.state, latest.url, latest.readyState, latest.score].join("|");
     if (key === lastKey) stableCount += 1;

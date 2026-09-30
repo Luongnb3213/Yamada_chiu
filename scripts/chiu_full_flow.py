@@ -193,6 +193,11 @@ def excel_preferred_device_id(xlsx: Path, sheet_name: str, row: int) -> str:
     return str(record.get("frida_device_id") or "").strip()
 
 
+def is_auto_device_selection(value: str) -> bool:
+    raw = (value or "auto").strip().lower()
+    return raw in ("", "auto", "all", "*", "tat-ca", "tất-cả")
+
+
 def ensure_status_headers(ws) -> dict[str, int]:
     headers = [str(cell.value or "").strip() for cell in ws[1]]
     if not any(headers):
@@ -250,6 +255,10 @@ def build_dom_cmd(args: argparse.Namespace) -> list[str]:
         str(args.wait_timeout_ms),
         "--max-steps",
         str(args.max_steps),
+        "--flow-complete-delay-ms",
+        str(args.flow_complete_delay_ms),
+        "--gold-payment-wait-timeout-ms",
+        str(args.gold_payment_wait_timeout_ms),
         "--device-id",
         args.device_id,
         "--profile-js",
@@ -276,6 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile-js", default="")
     parser.add_argument("--wait-timeout-ms", type=int, default=25000)
     parser.add_argument("--max-steps", type=int, default=40)
+    parser.add_argument("--flow-complete-delay-ms", type=int, default=2000)
+    parser.add_argument("--gold-payment-wait-timeout-ms", type=int, default=60000)
     return parser
 
 
@@ -284,7 +295,7 @@ def main() -> int:
     xlsx = Path(args.xlsx).expanduser()
     row_args = ["--xlsx", str(xlsx), "--sheet", args.sheet, "--row", str(args.row)]
     preferred_device_id = excel_preferred_device_id(xlsx, args.sheet, args.row)
-    if preferred_device_id and args.device_id != preferred_device_id:
+    if preferred_device_id and args.device_id != preferred_device_id and is_auto_device_selection(args.device_id):
         original_device_id = args.device_id
         args.device_id = preferred_device_id
         print(
@@ -292,6 +303,14 @@ def main() -> int:
             f"(bỏ qua lựa chọn {original_device_id})",
             flush=True,
         )
+    elif preferred_device_id and args.device_id != preferred_device_id:
+        print(
+            f"[excel] Row {args.row} gán cho device {preferred_device_id}, "
+            f"không chạy bằng device đã chọn {args.device_id}.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
     if args.profile_js:
         profile_js = Path(args.profile_js).expanduser()
     else:

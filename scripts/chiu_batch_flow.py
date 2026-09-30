@@ -46,7 +46,17 @@ def choose_sheet(wb, sheet_name: str):
     return wb[wb.sheetnames[0]]
 
 
-def runnable_rows(xlsx: Path, sheet_name: str, limit: int) -> tuple[str, list[dict]]:
+def is_auto_device_selection(value: str) -> bool:
+    raw = (value or "auto").strip().lower()
+    return raw in ("", "auto", "all", "*", "tat-ca", "tất-cả")
+
+
+def runnable_rows(
+    xlsx: Path,
+    sheet_name: str,
+    limit: int,
+    allowed_device_ids: set[str] | None = None,
+) -> tuple[str, list[dict]]:
     wb = openpyxl.load_workbook(xlsx, data_only=True)
     try:
         ws = choose_sheet(wb, sheet_name)
@@ -81,6 +91,8 @@ def runnable_rows(xlsx: Path, sheet_name: str, limit: int) -> tuple[str, list[di
             if status not in ("", "PENDING", "FAILED") and gold_status not in ("", "PENDING", "FAILED"):
                 continue
             preferred_device = cell_text(row[device_pos]) if device_pos is not None and device_pos < len(row) else ""
+            if allowed_device_ids is not None and preferred_device not in allowed_device_ids:
+                continue
             selected.append({"row": row_number, "device_id": preferred_device})
             if limit > 0 and len(selected) >= limit:
                 break
@@ -150,6 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=0, help="0 = run all runnable rows; N = run first N runnable rows.")
     parser.add_argument("--wait-timeout-ms", type=int, default=25000)
     parser.add_argument("--max-steps", type=int, default=40)
+    parser.add_argument("--flow-complete-delay-ms", type=int, default=2000)
+    parser.add_argument("--gold-payment-wait-timeout-ms", type=int, default=60000)
     parser.add_argument("--device-id", default=os.environ.get("FRIDA_DEVICE_ID", "auto"), help="'auto', 'all', or comma-separated Frida device IDs.")
     parser.add_argument("--no-reload", action="store_true")
     parser.add_argument("--no-submit", action="store_true")
@@ -176,9 +190,12 @@ def main() -> int:
         print(f"[batch] {exc}", file=sys.stderr, flush=True)
         return 1
 
-    sheet, tasks = runnable_rows(xlsx, args.sheet, args.limit)
+    allowed_device_ids = None if is_auto_device_selection(args.device_id) else set(device_ids)
+    sheet, tasks = runnable_rows(xlsx, args.sheet, args.limit, allowed_device_ids)
     print(f"[batch] Sheet={sheet} | số nick={'full' if args.limit == 0 else args.limit} | chọn {len(tasks)} row", flush=True)
     print(f"[batch] Devices: {', '.join(device_ids)}", flush=True)
+    if allowed_device_ids is not None:
+        print(f"[batch] Lọc theo frida_device_id trong Excel: {', '.join(sorted(allowed_device_ids))}", flush=True)
     if tasks:
         preview = ", ".join(str(task["row"]) for task in tasks[:20])
         suffix = "..." if len(tasks) > 20 else ""
@@ -229,6 +246,10 @@ def main() -> int:
             str(args.wait_timeout_ms),
             "--max-steps",
             str(args.max_steps),
+            "--flow-complete-delay-ms",
+            str(args.flow_complete_delay_ms),
+            "--gold-payment-wait-timeout-ms",
+            str(args.gold_payment_wait_timeout_ms),
             "--device-id",
             device_id,
             "--container-mode",

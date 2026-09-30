@@ -245,7 +245,12 @@ def run_with_frida(args: argparse.Namespace) -> Any:
         if args.action == "screen":
             return parse_result(ex.chiuscreen(0))
         if args.action == "step":
-            options = {"submit": not args.no_submit, "dryRun": args.dry_run}
+            options = {
+                "submit": not args.no_submit,
+                "dryRun": args.dry_run,
+                "flowCompleteDelayMs": args.flow_complete_delay_ms,
+                "goldPaymentWaitTimeoutMs": args.gold_payment_wait_timeout_ms,
+            }
             return parse_result(ex.chiustep(0, "{}", json.dumps(options)))
 
         options = {
@@ -257,6 +262,8 @@ def run_with_frida(args: argparse.Namespace) -> Any:
             "includeWaits": args.include_waits,
             "submit": not args.no_submit,
             "dryRun": args.dry_run,
+            "flowCompleteDelayMs": args.flow_complete_delay_ms,
+            "goldPaymentWaitTimeoutMs": args.gold_payment_wait_timeout_ms,
         }
         return parse_result(ex.chiurun(0, "{}", json.dumps(options)))
     finally:
@@ -277,6 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delay-ms", type=int, default=300)
     parser.add_argument("--poll-ms", type=int, default=500)
     parser.add_argument("--wait-timeout-ms", type=int, default=25000)
+    parser.add_argument("--flow-complete-delay-ms", type=int, default=2000)
+    parser.add_argument("--gold-payment-wait-timeout-ms", type=int, default=60000)
     parser.add_argument("--stable-polls", type=int, default=2)
     parser.add_argument("--include-waits", action="store_true")
     parser.add_argument("--load-wait", type=float, default=0.5)
