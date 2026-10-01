@@ -1,0 +1,6 @@
+[
+  { "credit_card_number": "XXXXXXXXXXXXXXXX", "credit_card_exp": "MM/YY", "credit_card_cvv": "NNN" },
+  { "credit_card_number": "XXXXXXXXXXXXXXXX", "credit_card_exp": "MM/YY", "credit_card_cvv": "NNN" },
+  { "credit_card_number": "XXXXXXXXXXXXXXXX", "credit_card_exp": "MM/YY", "credit_card_cvv": "NNN" },
+  { "credit_card_number": "XXXXXXXXXXXXXXXX", "credit_card_exp": "MM/YY", "credit_card_cvv": "NNN" }
+]

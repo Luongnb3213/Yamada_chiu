@@ -142,6 +142,13 @@ class YamadaChiuGUI(tk.Tk):
         self.device_combo.grid(row=2, column=3, columnspan=2, sticky="ew", pady=4)
         ttk.Button(settings, text="Làm mới", command=self.refresh_devices).grid(row=2, column=5, sticky="ew", padx=(6, 0))
 
+        ttk.Checkbutton(
+            settings,
+            text="Luồng mới: đăng ký (reg001→reg006) + container mới mỗi nick, ghi containerID + deviceID ra Excel. "
+            "Bỏ tick = luồng cũ (chỉ đăng nhập, reuse container).",
+            variable=self._var("new_container", False, "bool"),
+        ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(6, 0))
+
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(4, weight=1)
 
@@ -340,6 +347,8 @@ class YamadaChiuGUI(tk.Tk):
             cmd.append("--no-reload")
         if self.vars["no_submit"].get():
             cmd.append("--no-submit")
+        if self.vars["new_container"].get():
+            cmd.append("--new-container")
         commands = [cmd]
         self._run_commands("Chạy batch", commands)
 

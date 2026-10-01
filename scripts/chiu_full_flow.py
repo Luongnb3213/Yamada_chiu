@@ -21,6 +21,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from src.connections.xlsx_connection import excel_write_lock  # noqa: E402
 from chiu_profile_from_excel import load_row, profile_from_record, write_profile_js  # noqa: E402
+from card_rotation import apply_card_rotation  # noqa: E402
 
 
 EMAIL_OTP_PROCESS_TIMEOUT_SECONDS = 120
@@ -149,6 +150,18 @@ def print_dom_summary(dom_result: Any, title: str) -> None:
         print(f"[dom] {index}. {state} -> {action}{extra}", flush=True)
 
 
+def registration_completed(dom_result: Any) -> bool:
+    """True if this run drove the nick through new-member registration (reg006)."""
+    for item in dom_history(dom_result):
+        action = str(item.get("action") or "")
+        state = str(item.get("state") or "")
+        if action == "launch_app_after_registration" or state == "member_register_complete":
+            return True
+        if item.get("registered") is True:
+            return True
+    return False
+
+
 def needs_fresh_otp(dom_result: Any) -> bool:
     if not isinstance(dom_result, dict):
         return False
@@ -233,6 +246,7 @@ def ensure_status_headers(ws) -> dict[str, int]:
         "crane_last_used_at",
         "frida_device_id",
         "frida_device_name",
+        "reg_status",
         "gold_status",
         "chiu_status",
         "status",
@@ -288,6 +302,7 @@ def write_row_result(
     status: str,
     error_details: str = "",
     *,
+    reg_status: str = "",
     gold_status: str = "",
     chiu_status: str = "",
     notes: str = "",
@@ -307,6 +322,7 @@ def write_row_result(
             values = {
                 "status": status,
                 "error_details": error_details,
+                "reg_status": reg_status,
                 "gold_status": gold_status,
                 "chiu_status": chiu_status,
                 "notes": notes,
@@ -319,7 +335,7 @@ def write_row_result(
                 "frida_device_name": crane.get("frida_device_name") or "",
             }
             for key, value in values.items():
-                if key in ("gold_status", "chiu_status", "notes") and value in (None, ""):
+                if key in ("reg_status", "gold_status", "chiu_status", "notes") and value in (None, ""):
                     continue
                 if key.startswith("crane_") or key.startswith("frida_"):
                     if value in (None, ""):
@@ -353,6 +369,8 @@ def build_dom_cmd(args: argparse.Namespace) -> list[str]:
     ]
     if args.no_submit:
         cmd.append("--no-submit")
+    if getattr(args, "enable_register", False):
+        cmd.append("--enable-register")
     return cmd
 
 
@@ -363,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--row", type=int, required=True)
     parser.add_argument("--no-reload", action="store_true")
     parser.add_argument("--no-submit", action="store_true")
+    parser.add_argument(
+        "--enable-register",
+        action="store_true",
+        help="Bật luồng đăng ký mới (reg001->reg006) tuỳ reg_status. Không bật thì chỉ login/gold/onepiece như cũ.",
+    )
     parser.add_argument("--device-id", default=os.environ.get("FRIDA_DEVICE_ID", "auto"))
     parser.add_argument(
         "--container-mode",
@@ -407,6 +430,7 @@ def main() -> int:
         profile_js = ROOT_DIR / "agents" / "runtime" / f"current_profile_{safe_device}_r{args.row}_{os.getpid()}.js"
     args.profile_js = str(profile_js)
     crane_result: dict = {}
+    reg_status_val = ""
 
     try:
         crane_cmd = [
@@ -459,6 +483,7 @@ def main() -> int:
                 raise RuntimeError("Không lấy được OTP login từ email.")
             record, _, _ = load_row(xlsx, args.sheet, args.row)
             profile_with_otp = profile_from_record(record)
+            apply_card_rotation(profile_with_otp, args.row)  # giữ đúng thẻ xoay theo dòng
             profile_with_otp["auth_code"] = otp
             profile_with_otp["auth_code_source"] = "email_fresh"
             write_profile_js(profile_with_otp, Path(args.profile_js))
@@ -467,6 +492,8 @@ def main() -> int:
             print_prefixed_lines(dom_output, ("[chiu-dom]",))
             dom_result = parse_json_from_output(dom_output)
             print_dom_summary(dom_result, "sau OTP")
+        if registration_completed(dom_result):
+            reg_status_val = "SUCCESS"
         dom_error = terminal_dom_error(dom_result)
         if dom_error:
             raise RuntimeError(dom_error)
@@ -478,6 +505,7 @@ def main() -> int:
                 "final",
                 status="SUCCESS",
                 error_details="",
+                reg_status=reg_status_val,
                 gold_status="SUCCESS",
                 chiu_status="SUCCESS",
                 notes="gold_done; onepiece_lottery_submitted",
@@ -490,6 +518,7 @@ def main() -> int:
                     args.row,
                     "SUCCESS",
                     "",
+                    reg_status=reg_status_val,
                     gold_status="SUCCESS",
                     chiu_status="SUCCESS",
                     notes="gold_done; onepiece_lottery_submitted",
@@ -501,6 +530,7 @@ def main() -> int:
                 "final",
                 status="FORM_FILLED",
                 error_details="",
+                reg_status=reg_status_val,
                 gold_status="SUCCESS",
                 chiu_status="FORM_FILLED",
                 notes="gold_done; onepiece_form_filled_no_submit",
@@ -513,6 +543,7 @@ def main() -> int:
                     args.row,
                     "FORM_FILLED",
                     "",
+                    reg_status=reg_status_val,
                     gold_status="SUCCESS",
                     chiu_status="FORM_FILLED",
                     notes="gold_done; onepiece_form_filled_no_submit",
@@ -524,6 +555,7 @@ def main() -> int:
                 "final",
                 status="FAIL_NO_RETRY",
                 error_details="member_or_system_error",
+                reg_status=reg_status_val,
                 gold_status="FAIL_NO_RETRY",
                 chiu_status="FAIL_NO_RETRY",
                 notes="common_error_no_retry",
@@ -536,6 +568,7 @@ def main() -> int:
                     args.row,
                     "FAIL_NO_RETRY",
                     "member_or_system_error",
+                    reg_status=reg_status_val,
                     gold_status="FAIL_NO_RETRY",
                     chiu_status="FAIL_NO_RETRY",
                     notes="common_error_no_retry",
@@ -556,11 +589,12 @@ def main() -> int:
                 "final",
                 status="SUCCESS",
                 error_details="",
+                reg_status=reg_status_val,
                 notes=f"last_state={final_state}",
                 crane_result=crane_result,
             )
             if not args.defer_excel_write:
-                write_row_result(xlsx, args.sheet, args.row, "SUCCESS", "", notes=f"last_state={final_state}", crane_result=crane_result)
+                write_row_result(xlsx, args.sheet, args.row, "SUCCESS", "", reg_status=reg_status_val, notes=f"last_state={final_state}", crane_result=crane_result)
         print(f"\n[flow] Xong lượt chạy row {args.row} lúc {datetime.now():%Y-%m-%d %H:%M:%S}", flush=True)
         return 0
     except Exception as exc:
@@ -577,6 +611,7 @@ def main() -> int:
             "final",
             status="FAILED",
             error_details=message,
+            reg_status=reg_status_val,
             gold_status=gold_status,
             chiu_status=chiu_status,
             notes=notes,
@@ -589,6 +624,7 @@ def main() -> int:
                 args.row,
                 "FAILED",
                 message,
+                reg_status=reg_status_val,
                 gold_status=gold_status,
                 chiu_status=chiu_status,
                 notes=notes,

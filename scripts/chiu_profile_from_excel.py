@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.connections.xlsx_connection import COLUMN_ALIASES, normalize_status  # noqa: E402
+from card_rotation import apply_card_rotation  # noqa: E402
 
 
 BASE_KEYS = [
@@ -27,6 +28,7 @@ BASE_KEYS = [
     "crane_status",
     "frida_device_id",
     "frida_device_name",
+    "reg_status",
     "gold_status",
     "chiu_status",
     "status",
@@ -36,6 +38,20 @@ BASE_KEYS = [
     "credit_card_cvv",
     "onepiece_shop_name",
     "onepiece_area",
+    # Registration (reg001 -> reg006) fields. Only needed for nicks that still
+    # have to register (reg_status != SUCCESS); existing nicks just log in.
+    "pin",
+    "phone",
+    "last_name",
+    "first_name",
+    "last_name_kana",
+    "first_name_kana",
+    "postal_code",
+    "prefecture",
+    "city",
+    "address_rest",
+    "dob",
+    "gender",
 ]
 
 
@@ -186,6 +202,7 @@ def main() -> int:
 
     record, row_number, sheet = load_row(xlsx_path, args.sheet, args.row, args.email)
     profile = profile_from_record(record)
+    apply_card_rotation(profile, row_number)  # thẻ xoay theo dòng, ghi đè cột Excel
     metadata = {"xlsx": str(xlsx_path), "sheet": sheet, "row": row_number}
 
     if args.print_only:

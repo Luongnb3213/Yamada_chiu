@@ -458,11 +458,97 @@ function pageProgram(profile, options, mode) {
     clickElement(btn);
     return { ok: true, store: store, selectedShopNo: selected.selectedShopNo, selectedShopLabel: selected.selectedShopLabel };
   }
+  function normalizeDigits(value) {
+    return String(value || "").replace(/[^0-9]/g, "");
+  }
+  function normalizeDob(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const compact = raw.replace(/[^0-9]/g, "");
+    if (compact.length === 8) return compact;
+    const parts = raw.match(/^(\\d{1,4})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{1,4})$/);
+    if (!parts) return compact;
+    let y = parts[1], m = parts[2], d = parts[3];
+    if (y.length !== 4 && d.length === 4) { const tmp = y; y = d; d = tmp; }
+    return y.padStart(4, "0") + m.padStart(2, "0") + d.padStart(2, "0");
+  }
+  function normalizeGender(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return "";
+    if (["1", "m", "male", "man", "nam"].indexOf(raw) >= 0 || raw.indexOf("男") >= 0) return "1";
+    if (["2", "f", "female", "woman", "nu", "nữ"].indexOf(raw) >= 0 || raw.indexOf("女") >= 0) return "2";
+    return raw;
+  }
+  function setPrefecture(value) {
+    const select = q('select[name="prefcode"]');
+    if (!select) return false;
+    const target = String(value || "").trim();
+    if (!target) return false;
+    let selected = null;
+    for (const option of Array.prototype.slice.call(select.options || [])) {
+      const optText = text(option);
+      if (option.value === target || optText === target || optText.indexOf(target) >= 0 || target.indexOf(optText) >= 0) {
+        selected = option;
+        break;
+      }
+    }
+    if (!selected) return false;
+    select.value = selected.value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+  function requireFields(fields) {
+    return fields.filter(function (item) { return !item.value; }).map(function (item) { return item.name; });
+  }
+  // Registration screens (reg001 -> reg006). Each def must match ALL of its
+  // required selectors plus at least one hint per provided url/title/body group,
+  // so reg screens are never confused with the parallel login (changephone/chgauth)
+  // screens or with the logged-in home/gold/onepiece screens.
+  const REGISTER_SCREEN_DEFS = [
+    { state: "tracking_location_consent", urlIncludes: ["profilepassport.jp"], titleIncludes: ["個別情報開示"], requiredSelectors: [".btn-close"] },
+    { state: "member_register_top", urlIncludes: ["action=authorize2"], titleIncludes: ["会員登録"], requiredSelectors: ['a[href*="module=memberlogin"][href*="action=reg001"]'], absentSelectors: ["#chkbox"] },
+    { state: "terms_consent", urlIncludes: ["action=reg001"], titleIncludes: ["新規登録"], requiredSelectors: ["#chkbox", 'form[name="input01"][action*="func=regist"]'] },
+    { state: "email_register_input", urlIncludes: ["func=regist"], titleIncludes: ["メールアドレス登録"], requiredSelectors: ['input[name="reg_mail_address"]', 'input[name="mail_address_check"]'] },
+    { state: "email_register_confirm", urlIncludes: ["action=reg002", "func=confirm"], bodyIncludes: ["認証コードをお送りします"], requiredSelectors: ['form[action*="action=regauth"] input[name="token"]'], absentSelectors: ['input[name="inputcode"]'] },
+    { state: "unexpected_error_restart", bodyIncludes: ["予期せぬエラー", "最初からやり直してください"], requiredSelectors: ['a[href*="module=authorize"][href*="action=authorize2"]'] },
+    { state: "email_auth_code_input", urlIncludes: ["action=regauth"], titleIncludes: ["メールアドレス登録"], requiredSelectors: ['input[name="inputcode"]'] },
+    { state: "member_info_input", urlIncludes: ["action=reg003"], requiredSelectors: ['form[name="input01"] input[name="password"]', 'input[name="tel"]', 'input[name="sei"]', 'input[name="mei"]', 'input[name="zip"]', 'select[name="prefcode"]'] },
+    { state: "member_info_confirm", urlIncludes: ["action=reg005"], bodyIncludes: ["上記で登録する"], requiredSelectors: ['form[name="inputreg"]'] },
+    { state: "member_register_complete", urlIncludes: ["action=reg006"], titleIncludes: ["会員登録完了"], requiredSelectors: ['a[href="ymd://"]'] }
+  ];
+  function registerScreen() {
+    const url = location.href || "";
+    const titleValue = document.title || "";
+    const bodyValue = bodyText();
+    for (const def of REGISTER_SCREEN_DEFS) {
+      const required = def.requiredSelectors || [];
+      if (!required.length) continue;
+      if (!required.every(function (sel) { return !!q(sel); })) continue;
+      const absent = def.absentSelectors || [];
+      if (!absent.every(function (sel) { return !q(sel); })) continue;
+      if ((def.urlIncludes || []).length && !def.urlIncludes.some(function (h) { return url.indexOf(h) >= 0; })) continue;
+      if ((def.titleIncludes || []).length && !def.titleIncludes.some(function (h) { return titleValue.indexOf(h) >= 0; })) continue;
+      if ((def.bodyIncludes || []).length && !def.bodyIncludes.some(function (h) { return bodyValue.indexOf(h) >= 0; })) continue;
+      return def.state;
+    }
+    return "";
+  }
+  function registrationActive() {
+    // Luồng đăng ký chỉ bật khi checkbox "luồng mới" được tick (options.registerEnabled).
+    // Không tick -> luôn false -> giữ nguyên luồng cũ (login/gold/onepiece), kể cả khi
+    // reg_status trống. Khi đã tick thì vẫn tôn trọng reg_status=SUCCESS để chỉ đăng nhập.
+    if (!options || !options.registerEnabled) return false;
+    return String(val("reg_status", "regStatus") || "").toUpperCase() !== "SUCCESS";
+  }
   function currentScreen() {
     const b = bodyText();
     const title = document.title || "";
     const href = location.href || "";
     if (/会員でないか、システムエラーのため表示できません/.test(b)) return "ymd_common_error_no_retry";
+    if (registrationActive()) {
+      const regState = registerScreen();
+      if (regState) return regState;
+    }
     if ((href.indexOf("0929_lottery-pcs/notice.html") >= 0 || /ONE PIECE/.test(title + " " + b)) && q("#go-form-btn")) return "onepiece_lottery_notice";
     if (/すでにお申込み済み|申込済み|お申込み済み/.test(b) && /lotterysale001/.test(href)) return "onepiece_lottery_already_applied";
     if (q('form[action*="lotterysale001"]') && q("#pre") && q("#area") && q("#entry")) return "onepiece_lottery_apply_form";
@@ -650,6 +736,108 @@ function pageProgram(profile, options, mode) {
     case "onepiece_lottery_already_applied":
       delayBeforeFlowComplete();
       return JSON.stringify(result("chiu_onepiece_submitted", "onepiece_lottery_already_applied"));
+    case "tracking_location_consent": {
+      if (options.submit !== false && !options.dryRun) {
+        if (typeof window.Onclick === "function") window.Onclick();
+        else clickElement(q(".btn-close"));
+      }
+      return JSON.stringify(result(state, "close_tracking_consent"));
+    }
+    case "member_register_top": {
+      const link = q('a[href*="module=memberlogin"][href*="action=reg001"]') ||
+        qa('a').find(function (el) { return text(el).indexOf("新規") >= 0; });
+      if (!link) return JSON.stringify(fail(state, "missing_new_register_link"));
+      navigateElement(link);
+      return JSON.stringify(result(state, "open_new_member_registration"));
+    }
+    case "terms_consent": {
+      setChecked("#chkbox", true);
+      if (typeof window.consentCheck === "function") window.consentCheck();
+      submitForm(document.forms.input01 || q('form[name="input01"]') || q("form"));
+      return JSON.stringify(result(state, "accept_terms_and_submit"));
+    }
+    case "email_register_input": {
+      const email = val("email", "mail");
+      if (!email) return JSON.stringify(fail(state, "missing_email"));
+      setField('input[name="reg_mail_address"]', email);
+      setField('input[name="mail_address_check"]', email);
+      const emailInput = q('input[name="reg_mail_address"]');
+      clickSubmitValue("次へ") || submitForm((emailInput && emailInput.form) || q("form"));
+      return JSON.stringify(result(state, "fill_register_email_and_submit", { email: email }));
+    }
+    case "email_register_confirm": {
+      const form = q('form[action*="action=regauth"]') || q("form");
+      clickSubmitValue("送信") || submitForm(form);
+      return JSON.stringify(result(state, "send_register_auth_email"));
+    }
+    case "email_auth_code_input": {
+      const code = val("auth_code", "authCode", "email_code", "emailCode", "inputcode", "otp");
+      if (!code) return JSON.stringify(fail(state, "need_register_otp", { needs_otp: true }));
+      setField('input[name="inputcode"]', code);
+      const codeInput = q('input[name="inputcode"]');
+      clickSubmitValue("次へ") || submitForm((codeInput && codeInput.form) || q("form"));
+      return JSON.stringify(result(state, "fill_register_otp_and_submit"));
+    }
+    case "member_info_input": {
+      const mapped = {
+        pin: normalizeDigits(val("pin")),
+        phone: normalizeDigits(val("phone", "tel")),
+        lastName: val("last_name", "lastName", "sei"),
+        firstName: val("first_name", "firstName", "mei"),
+        lastKana: val("last_name_kana", "katakana_last_name", "lastNameKana", "seikana"),
+        firstKana: val("first_name_kana", "katakana_first_name", "firstNameKana", "meikana"),
+        postal: normalizeDigits(val("postal_code", "postalCode", "zip")),
+        prefecture: val("prefecture", "prefcode"),
+        city: val("city", "adrs1"),
+        addressRest: val("address_rest", "addressRest", "adrs2", "address"),
+        dob: normalizeDob(val("dob", "birth_date", "birthday", "birthdate")),
+        gender: normalizeGender(val("gender", "sex"))
+      };
+      const missing = requireFields([
+        { name: "pin", value: mapped.pin },
+        { name: "phone", value: mapped.phone },
+        { name: "last_name", value: mapped.lastName },
+        { name: "first_name", value: mapped.firstName },
+        { name: "last_name_kana", value: mapped.lastKana },
+        { name: "first_name_kana", value: mapped.firstKana },
+        { name: "postal_code", value: mapped.postal },
+        { name: "prefecture", value: mapped.prefecture },
+        { name: "city", value: mapped.city },
+        { name: "address_rest", value: mapped.addressRest }
+      ]);
+      if (missing.length && !options.allowPartial) {
+        return JSON.stringify(fail(state, "missing_register_info", { missing: missing }));
+      }
+      setField('input[name="password"]', mapped.pin);
+      setField('input[name="tel"]', mapped.phone);
+      setField('input[name="sei"]', mapped.lastName);
+      setField('input[name="mei"]', mapped.firstName);
+      setField('input[name="seikana"]', mapped.lastKana);
+      setField('input[name="meikana"]', mapped.firstKana);
+      setField('input[name="zip"]', mapped.postal);
+      setPrefecture(mapped.prefecture);
+      setField('input[name="adrs1"]', mapped.city);
+      setField('input[name="adrs2"]', mapped.addressRest);
+      if (mapped.dob) setField('input[name="birthday"]', mapped.dob);
+      if (mapped.gender) setChecked('input[name="sex"][value="' + mapped.gender + '"]', true);
+      submitForm(document.forms.input01 || q('form[name="input01"]') || q("form"));
+      return JSON.stringify(result(state, "fill_member_info_and_submit", { filled: mapped }));
+    }
+    case "member_info_confirm": {
+      submitForm(document.forms.inputreg || q('form[name="inputreg"]') || q("form"));
+      return JSON.stringify(result(state, "confirm_member_info_and_register"));
+    }
+    case "member_register_complete": {
+      const link = q('a[href="ymd://"]');
+      if (link) navigateElement(link);
+      return JSON.stringify(result(state, "launch_app_after_registration", { registered: true }));
+    }
+    case "unexpected_error_restart": {
+      const link = q('a[href*="module=authorize"][href*="action=authorize2"]');
+      if (!link) return JSON.stringify(fail(state, "missing_restart_link"));
+      navigateElement(link);
+      return JSON.stringify(result(state, "restart_after_unexpected_error"));
+    }
     case "ymd_common_error_no_retry":
       return JSON.stringify(result(state, "fail_no_retry", {
         noRetry: true,
@@ -723,6 +911,15 @@ async function waitAfterActionInternal(idx, previous, options) {
     "send_login_auth_email",
     "fill_login_otp_and_submit",
     "open_app_top_after_login",
+    "open_new_member_registration",
+    "accept_terms_and_submit",
+    "fill_register_email_and_submit",
+    "send_register_auth_email",
+    "fill_register_otp_and_submit",
+    "fill_member_info_and_submit",
+    "confirm_member_info_and_register",
+    "launch_app_after_registration",
+    "restart_after_unexpected_error",
     "open_mypage",
     "gold_already_registered_go_home",
     "open_gold_membership_benefits",

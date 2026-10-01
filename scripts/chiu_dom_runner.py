@@ -250,6 +250,7 @@ def run_with_frida(args: argparse.Namespace) -> Any:
                 "dryRun": args.dry_run,
                 "flowCompleteDelayMs": args.flow_complete_delay_ms,
                 "goldPaymentWaitTimeoutMs": args.gold_payment_wait_timeout_ms,
+                "registerEnabled": args.enable_register,
             }
             return parse_result(ex.chiustep(0, "{}", json.dumps(options)))
 
@@ -264,6 +265,7 @@ def run_with_frida(args: argparse.Namespace) -> Any:
             "dryRun": args.dry_run,
             "flowCompleteDelayMs": args.flow_complete_delay_ms,
             "goldPaymentWaitTimeoutMs": args.gold_payment_wait_timeout_ms,
+            "registerEnabled": args.enable_register,
         }
         return parse_result(ex.chiurun(0, "{}", json.dumps(options)))
     finally:
@@ -294,6 +296,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-relaunch-if-no-webview", dest="relaunch_if_no_webview", action="store_false")
     parser.add_argument("--no-submit", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--enable-register",
+        action="store_true",
+        help="Bật luồng đăng ký mới (reg001->reg006) tuỳ reg_status. Không bật thì chỉ login/gold/onepiece như cũ.",
+    )
     parser.add_argument("--_child", action="store_true", help=argparse.SUPPRESS)
     parser.set_defaults(relaunch_if_no_webview=True)
     return parser

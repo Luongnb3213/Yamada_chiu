@@ -43,6 +43,7 @@ ROW_RESULT_COLUMNS = (
     "crane_last_used_at",
     "frida_device_id",
     "frida_device_name",
+    "reg_status",
     "gold_status",
     "chiu_status",
     "status",
@@ -270,6 +271,7 @@ def collect_run_events(run_dir: Path) -> dict[tuple[str, int], dict]:
                 if stage == "final":
                     current["status"] = str(event.get("status") or "FAILED").strip().upper()
                     current["error_details"] = str(event.get("error_details") or "")
+                    current["reg_status"] = str(event.get("reg_status") or "")
                     current["gold_status"] = str(event.get("gold_status") or "")
                     current["chiu_status"] = str(event.get("chiu_status") or "")
                     current["notes"] = str(event.get("notes") or "")
@@ -311,6 +313,8 @@ def merge_run_events_to_excel(xlsx: Path, run_dir: Path, default_sheet: str) -> 
                 if record.get("final_seen"):
                     values["status"] = record.get("status") or "FAILED"
                     values["error_details"] = record.get("error_details") or ""
+                    if record.get("reg_status"):
+                        values["reg_status"] = record.get("reg_status")
                     if record.get("gold_status"):
                         values["gold_status"] = record.get("gold_status")
                     if record.get("chiu_status"):
@@ -344,6 +348,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device-id", default=os.environ.get("FRIDA_DEVICE_ID", "auto"), help="'auto', 'all', or comma-separated Frida device IDs.")
     parser.add_argument("--no-reload", action="store_true")
     parser.add_argument("--no-submit", action="store_true")
+    parser.add_argument(
+        "--new-container",
+        action="store_true",
+        help="Tạo container Crane MỚI cho mỗi nick (đăng ký/đăng nhập) và ghi containerID + deviceID ra Excel. "
+        "Không bật thì giữ flow cũ (reuse container active, chỉ đăng nhập nếu cần).",
+    )
     parser.add_argument("--max-attempts", type=int, default=2, help="Max attempts per row, including the first run.")
     parser.add_argument("--list-only", action="store_true")
     parser.add_argument("--direct-excel-write", action="store_true", help="Old mode: each worker writes Excel after every row.")
@@ -417,11 +427,16 @@ def main() -> int:
             target = device_ids[rr % len(device_ids)]
             rr += 1
         queued_task = dict(task)
-        queued_task["container_mode"] = (
-            "active-then-create"
-            if task.get("container_id") or queued_per_device[target] == 0
-            else "create"
-        )
+        if args.new_container:
+            # Checkbox "Tạo container mới mỗi nick": luôn tạo container Crane mới,
+            # bỏ qua container cũ trên row; crane ghi lại containerID + deviceID ra Excel.
+            queued_task["container_mode"] = "create"
+        else:
+            queued_task["container_mode"] = (
+                "active-then-create"
+                if task.get("container_id") or queued_per_device[target] == 0
+                else "create"
+            )
         queued_per_device[target] += 1
         task_queues[target].put(queued_task)
 
@@ -462,6 +477,10 @@ def main() -> int:
             cmd.append("--no-reload")
         if args.no_submit:
             cmd.append("--no-submit")
+        if args.new_container:
+            # Checkbox "luồng mới": bật luồng đăng ký (reg001->reg006) trong DOM.
+            # container_mode="create" (ở trên) đã lo phần tạo container mới.
+            cmd.append("--enable-register")
 
         final_code = 0
         final_output = ""
