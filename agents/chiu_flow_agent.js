@@ -303,6 +303,26 @@ function pageProgram(profile, options, mode) {
     if (action) form.setAttribute("action", action);
     return submitForm(form);
   }
+  function creditPageReady() {
+    // Màn gold-credit-card-payment hay bị treo khi agent bấm 次へ trước lúc trang
+    // tải xong: lúc đó common.js (hàm doSubmit) chưa có và ảnh thẻ chưa render.
+    // readyState === "complete" chính là mốc window.load -> toàn bộ ảnh đã xong,
+    // nên chờ tới đó rồi mới submit thì click ăn ngay (đúng quan sát thực tế).
+    // __chiuCreditFirstSeen sống qua các lần inject vì cùng một page/window, và
+    // tự reset khi trang điều hướng đi. Fallback theo thời gian để không kẹt vĩnh
+    // viễn nếu một ảnh treo mạng (readyState mãi không "complete").
+    var now = Date.now();
+    var first = now;
+    try {
+      if (!window.__chiuCreditFirstSeen) window.__chiuCreditFirstSeen = now;
+      first = window.__chiuCreditFirstSeen;
+    } catch (e) {}
+    var maxWaitMs = Number(options.creditReadyMaxWaitMs);
+    if (!Number.isFinite(maxWaitMs) || maxWaitMs <= 0) maxWaitMs = 20000;
+    if (now - first >= maxWaitMs) return true;
+    if (typeof window.doSubmit !== "function") return false;
+    return document.readyState === "complete";
+  }
   function flowCompleteDelayMs() {
     const n = Number(options.flowCompleteDelayMs);
     if (Number.isFinite(n) && n >= 0) return n;
@@ -554,6 +574,7 @@ function pageProgram(profile, options, mode) {
     if (q('form[action*="lotterysale001"]') && q("#pre") && q("#area") && q("#entry")) return "onepiece_lottery_apply_form";
     if (/応募確認/.test(title + " " + b) && /応募を確定する/.test(b) && q('form[action*="lotterysale002"]')) return "onepiece_lottery_apply_confirm";
     if (/lotterysale003/.test(href) || /応募完了|応募を受け付けました|ご応募ありがとうございました/.test(title + " " + b)) return "onepiece_lottery_complete";
+    if (/お取扱出来ないクレジットカード|入力された内容にエラーがあります/.test(b) && /クレジット/.test(b)) return "gold_card_unusable_no_retry";
     if (q('input[name="login_address"]') && q('input[name="login_address_check"]')) return "login_email_input";
     if (q('input[name="inputcode"]') && /認証コード/.test(b) && /ログイン|メール/.test(b)) return "login_auth_code_input";
     if (/下記メールアドレス|送信/.test(b) && /changephone|chgauth/.test(href + " " + document.documentElement.innerHTML) && !q('input[name="inputcode"]')) return "login_email_confirm";
@@ -681,6 +702,17 @@ function pageProgram(profile, options, mode) {
       };
       if (!filled.ccNumber || !filled.month || !filled.year || !filled.cvv) {
         return JSON.stringify(fail(state, "card_fields_not_filled", filled));
+      }
+      // Fields đã điền (idempotent, poll lại vẫn giữ nguyên). Chỉ bấm 次へ khi trang
+      // đã load xong (ảnh render đủ + doSubmit sẵn sàng); chưa xong thì trả wait để
+      // run-loop poll lại thay vì bấm sớm gây treo.
+      if (!creditPageReady()) {
+        return JSON.stringify(result(state, "wait_credit_page_render", {
+          wait: true,
+          readyState: document.readyState,
+          doSubmitReady: typeof window.doSubmit === "function",
+          waitedMs: Date.now() - (window.__chiuCreditFirstSeen || Date.now())
+        }));
       }
       if (!submitCreditPaymentForm()) return JSON.stringify(fail(state, "credit_payment_submit_failed", filled));
       return JSON.stringify(result(state, "fill_credit_card_and_next", { expMonth: exp.month, expYear: exp.year }));
@@ -843,6 +875,11 @@ function pageProgram(profile, options, mode) {
         noRetry: true,
         reason: "member_or_system_error"
       }));
+    case "gold_card_unusable_no_retry":
+      return JSON.stringify(result(state, "fail_no_retry", {
+        noRetry: true,
+        reason: "card_unusable"
+      }));
     case "loading":
       return JSON.stringify(result(state, "wait_loading", { wait: true }));
     default:
@@ -886,7 +923,7 @@ async function runInternal(idx, profile, options) {
       continue;
     }
     history.push(res);
-    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry") break;
+    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable_no_retry") break;
     if (res.action === "done") break;
     const wait = await waitAfterActionInternal(idx || 0, res, opts);
     if (wait && (opts.includeWaits || !wait.ok)) history.push(wait);

@@ -133,21 +133,34 @@ class YamadaChiuGUI(tk.Tk):
             width=8,
         ).grid(row=2, column=1, sticky="w", pady=4)
         ttk.Label(settings, text="Thiết bị").grid(row=2, column=2, sticky="e", padx=(20, 6))
-        self.device_combo = ttk.Combobox(
-            settings,
-            values=["auto", "all"],
-            textvariable=self._var("device_id", str(getattr(config, "_cfg", {}).get("device_id", "auto") or "auto")),
-            width=34,
+        self._var("device_id", str(getattr(config, "_cfg", {}).get("device_id", "auto") or "auto"))
+        device_box = ttk.Frame(settings)
+        device_box.grid(row=2, column=3, columnspan=2, sticky="ew", pady=4)
+        self.device_listbox = tk.Listbox(
+            device_box,
+            height=4,
+            selectmode="extended",
+            exportselection=False,
         )
-        self.device_combo.grid(row=2, column=3, columnspan=2, sticky="ew", pady=4)
-        ttk.Button(settings, text="Làm mới", command=self.refresh_devices).grid(row=2, column=5, sticky="ew", padx=(6, 0))
+        self.device_listbox.pack(side="left", fill="both", expand=True)
+        self.device_scroll = ttk.Scrollbar(device_box, command=self.device_listbox.yview)
+        self.device_listbox.configure(yscrollcommand=self.device_scroll.set)
+        self.device_scroll.pack(side="right", fill="y")
+        device_buttons = ttk.Frame(settings)
+        device_buttons.grid(row=2, column=5, sticky="nsew", padx=(6, 0), pady=4)
+        ttk.Button(device_buttons, text="Làm mới", command=self.refresh_devices).pack(fill="x")
+        ttk.Button(device_buttons, text="Auto", command=self.select_auto_device).pack(fill="x", pady=(4, 0))
+        ttk.Button(device_buttons, text="All", command=self.select_all_devices).pack(fill="x", pady=(4, 0))
+        self.device_selected_label = ttk.Label(settings, text="")
+        self.device_selected_label.grid(row=3, column=3, columnspan=3, sticky="w")
+        self.device_listbox.bind("<<ListboxSelect>>", lambda _event: self._update_selected_device_label())
 
         ttk.Checkbutton(
             settings,
             text="Luồng mới: đăng ký (reg001→reg006) + container mới mỗi nick, ghi containerID + deviceID ra Excel. "
             "Bỏ tick = luồng cũ (chỉ đăng nhập, reuse container).",
             variable=self._var("new_container", False, "bool"),
-        ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        ).grid(row=4, column=0, columnspan=6, sticky="w", pady=(6, 0))
 
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(4, weight=1)
@@ -178,6 +191,7 @@ class YamadaChiuGUI(tk.Tk):
         self.log_text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
+        self.device_values: list[str] = ["auto", "all"]
         self._log("Sẵn sàng. Số nick = 0 để chạy full sheet, hoặc nhập N để chạy N nick đầu.")
         self.after(300, self.refresh_devices)
 
@@ -231,15 +245,30 @@ class YamadaChiuGUI(tk.Tk):
         return ["--xlsx", xlsx, "--sheet", sheet, "--limit", limit, "--device-id", self._selected_device_id()]
 
     def _selected_device_id(self) -> str:
-        value = self.vars["device_id"].get().strip() or "auto"
-        if " | " in value:
-            return value.split(" | ", 1)[0].strip()
-        return value
+        values = [self.device_values[i] for i in self.device_listbox.curselection()] if hasattr(self, "device_listbox") else []
+        selected_ids = [self._device_id_from_label(value) for value in values]
+        selected_ids = [value for value in selected_ids if value]
+        if "all" in selected_ids:
+            value = "all"
+        else:
+            real_ids = [value for value in selected_ids if value != "auto"]
+            value = ",".join(real_ids) if real_ids else (selected_ids[0] if selected_ids else "")
+        if not value:
+            value = self.vars["device_id"].get().strip() or "auto"
+            value = self._device_id_from_label(value)
+        self.vars["device_id"].set(value or "auto")
+        return value or "auto"
 
     def _single_device_id(self) -> str:
         value = self._selected_device_id()
         if value == "all" or "," in value:
             return "auto"
+        return value
+
+    def _device_id_from_label(self, value: str) -> str:
+        value = str(value or "").strip()
+        if " | " in value:
+            return value.split(" | ", 1)[0].strip()
         return value
 
     def refresh_devices(self) -> None:
@@ -273,15 +302,48 @@ class YamadaChiuGUI(tk.Tk):
 
     def _apply_device_values(self, values: list[str]) -> None:
         current = self.vars["device_id"].get().strip() or "auto"
-        self.device_combo.configure(values=values)
-        current_id = current.split(" | ", 1)[0].strip()
+        self.device_values = values
+        self.device_listbox.delete(0, "end")
         for value in values:
-            if value == current or value.split(" | ", 1)[0].strip() == current_id:
-                self.vars["device_id"].set(value)
-                break
+            self.device_listbox.insert("end", value)
+
+        current_ids = [part.strip() for part in current.split(",") if part.strip()]
+        if not current_ids:
+            current_ids = ["auto"]
+        selected_any = False
+        for index, value in enumerate(values):
+            value_id = self._device_id_from_label(value)
+            if value_id in current_ids or value in current_ids:
+                self.device_listbox.selection_set(index)
+                selected_any = True
+        if not selected_any and values:
+            self.device_listbox.selection_set(0)
+        self._update_selected_device_label()
+        self._log(f"[device] {len(values) - 2} thiết bị USB Frida. Có thể Cmd/Shift chọn nhiều máy, hoặc chọn 'all'.")
+
+    def _update_selected_device_label(self) -> None:
+        value = self._selected_device_id()
+        if value == "all":
+            text = "Đã chọn: all"
+        elif "," in value:
+            text = f"Đã chọn: {len(value.split(','))} thiết bị"
         else:
-            self.vars["device_id"].set(values[0])
-        self._log(f"[device] {len(values) - 2} thiết bị USB Frida. Chọn 'all' để chạy song song.")
+            text = f"Đã chọn: {value}"
+        self.device_selected_label.configure(text=text)
+
+    def select_auto_device(self) -> None:
+        self.device_listbox.selection_clear(0, "end")
+        if self.device_values:
+            self.device_listbox.selection_set(0)
+        self._update_selected_device_label()
+
+    def select_all_devices(self) -> None:
+        self.device_listbox.selection_clear(0, "end")
+        for index, value in enumerate(self.device_values):
+            if self._device_id_from_label(value) == "all":
+                self.device_listbox.selection_set(index)
+                break
+        self._update_selected_device_label()
 
     def _py(self) -> str:
         return self.vars["runtime_python"].get().strip() or self.runtime_python

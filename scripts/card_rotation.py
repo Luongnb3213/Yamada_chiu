@@ -18,11 +18,37 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
+from typing import Iterator
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CARDS_FILE = Path(os.environ.get("YAMADA_CARDS_FILE", "") or (ROOT_DIR / "cards.json")).expanduser()
+RUNTIME_DIR = ROOT_DIR / "agents" / "runtime"
+CARD_COOLDOWN_STATE_FILE = Path(
+    os.environ.get("YAMADA_CARD_COOLDOWN_STATE_FILE", "")
+    or (RUNTIME_DIR / "card_cooldowns.json")
+).expanduser()
+CARD_COOLDOWN_LOCK_FILE = Path(
+    os.environ.get("YAMADA_CARD_COOLDOWN_LOCK_FILE", "")
+    or (RUNTIME_DIR / "card_cooldowns.lock")
+).expanduser()
+
+
+@contextmanager
+def exclusive_lock(path: Path) -> Iterator[None]:
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def load_cards() -> list[dict]:
@@ -62,9 +88,95 @@ def pick_card(row_number: object) -> dict:
     return dict(cards[idx])
 
 
-def apply_card_rotation(profile: dict, row_number: object) -> dict:
+def card_cooldown_seconds() -> float:
+    raw = os.environ.get("YAMADA_CARD_COOLDOWN_SECONDS", "30")
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        seconds = 30.0
+    return max(0.0, seconds)
+
+
+def card_key(card: dict) -> str:
+    raw = "|".join(
+        str(card.get(key) or "").strip()
+        for key in ("credit_card_number", "credit_card_exp", "credit_card_cvv")
+    )
+    return sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def masked_card(card: dict) -> str:
+    number = "".join(ch for ch in str(card.get("credit_card_number") or "") if ch.isdigit())
+    if len(number) >= 4:
+        return "****" + number[-4:]
+    return "****"
+
+
+def load_cooldown_state() -> dict:
+    try:
+        if not CARD_COOLDOWN_STATE_FILE.exists():
+            return {}
+        data = json.loads(CARD_COOLDOWN_STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_cooldown_state(state: dict) -> None:
+    CARD_COOLDOWN_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CARD_COOLDOWN_STATE_FILE.with_suffix(CARD_COOLDOWN_STATE_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CARD_COOLDOWN_STATE_FILE)
+
+
+def wait_for_card_cooldown(card: dict, row_number: object) -> None:
+    cooldown = card_cooldown_seconds()
+    if cooldown <= 0 or not card:
+        return
+
+    key = card_key(card)
+    row_value = str(row_number or "").strip()
+    wait_seconds = 0.0
+    scheduled_at = time.time()
+
+    with exclusive_lock(CARD_COOLDOWN_LOCK_FILE):
+        state = load_cooldown_state()
+        cards_state = state.setdefault("cards", {})
+        entry = cards_state.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+
+        now = time.time()
+        last_row = str(entry.get("last_row") or "").strip()
+        if last_row == row_value:
+            scheduled_at = now
+        else:
+            next_available = float(entry.get("next_available_at") or 0)
+            scheduled_at = max(now, next_available)
+            wait_seconds = max(0.0, scheduled_at - now)
+
+        entry.update(
+            {
+                "masked": masked_card(card),
+                "last_row": row_value,
+                "last_scheduled_at": scheduled_at,
+                "next_available_at": scheduled_at + cooldown,
+            }
+        )
+        cards_state[key] = entry
+        state["updated_at"] = now
+        save_cooldown_state(state)
+
+    if wait_seconds > 0:
+        print(f"[card] {masked_card(card)} chờ {wait_seconds:.0f}s cooldown trước khi dùng.", flush=True)
+        time.sleep(wait_seconds)
+
+
+def apply_card_rotation(profile: dict, row_number: object, *, wait_cooldown: bool = True) -> dict:
     """Ghi đè credit_card_* trong profile bằng thẻ xoay theo dòng. Ưu tiên hơn Excel."""
     card = pick_card(row_number)
     if card:
+        if wait_cooldown:
+            wait_for_card_cooldown(card, row_number)
         profile.update(card)
     return profile

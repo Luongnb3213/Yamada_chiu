@@ -132,7 +132,8 @@ def print_dom_summary(dom_result: Any, title: str) -> None:
         elif action == "onepiece_lottery_already_applied":
             extra = " | đã nộp trước đó"
         elif action == "fail_no_retry":
-            extra = " | FAIL_NO_RETRY"
+            reason = str(step.get("reason") or "").strip()
+            extra = " | FAIL_NO_RETRY" + (f": {reason}" if reason else "")
         elif action == "wait_timeout":
             last = step.get("last") if isinstance(step.get("last"), dict) else {}
             extra = f" | timeout ở {last.get('state') or '?'}"
@@ -483,7 +484,7 @@ def main() -> int:
                 raise RuntimeError("Không lấy được OTP login từ email.")
             record, _, _ = load_row(xlsx, args.sheet, args.row)
             profile_with_otp = profile_from_record(record)
-            apply_card_rotation(profile_with_otp, args.row)  # giữ đúng thẻ xoay theo dòng
+            apply_card_rotation(profile_with_otp, args.row, wait_cooldown=False)  # giữ đúng thẻ xoay theo dòng
             profile_with_otp["auth_code"] = otp
             profile_with_otp["auth_code_source"] = "email_fresh"
             write_profile_js(profile_with_otp, Path(args.profile_js))
@@ -572,6 +573,31 @@ def main() -> int:
                     gold_status="FAIL_NO_RETRY",
                     chiu_status="FAIL_NO_RETRY",
                     notes="common_error_no_retry",
+                    crane_result=crane_result,
+                )
+        elif final_state == "gold_card_unusable_no_retry":
+            append_run_event(
+                args,
+                "final",
+                status="FAIL_NO_RETRY",
+                error_details="card_unusable",
+                reg_status=reg_status_val,
+                gold_status="FAIL_NO_RETRY",
+                chiu_status="FAIL_NO_RETRY",
+                notes="card_unusable_no_retry",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAIL_NO_RETRY",
+                    "card_unusable",
+                    reg_status=reg_status_val,
+                    gold_status="FAIL_NO_RETRY",
+                    chiu_status="FAIL_NO_RETRY",
+                    notes="card_unusable_no_retry",
                     crane_result=crane_result,
                 )
         elif not args.no_submit and final_state in ("store_sale_tab", "ready_for_chiu_store_sale"):
