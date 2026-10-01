@@ -462,6 +462,7 @@ function pageProgram(profile, options, mode) {
     const b = bodyText();
     const title = document.title || "";
     const href = location.href || "";
+    if (/会員でないか、システムエラーのため表示できません/.test(b)) return "ymd_common_error_no_retry";
     if ((href.indexOf("0929_lottery-pcs/notice.html") >= 0 || /ONE PIECE/.test(title + " " + b)) && q("#go-form-btn")) return "onepiece_lottery_notice";
     if (/すでにお申込み済み|申込済み|お申込み済み/.test(b) && /lotterysale001/.test(href)) return "onepiece_lottery_already_applied";
     if (q('form[action*="lotterysale001"]') && q("#pre") && q("#area") && q("#entry")) return "onepiece_lottery_apply_form";
@@ -649,6 +650,11 @@ function pageProgram(profile, options, mode) {
     case "onepiece_lottery_already_applied":
       delayBeforeFlowComplete();
       return JSON.stringify(result("chiu_onepiece_submitted", "onepiece_lottery_already_applied"));
+    case "ymd_common_error_no_retry":
+      return JSON.stringify(result(state, "fail_no_retry", {
+        noRetry: true,
+        reason: "member_or_system_error"
+      }));
     case "loading":
       return JSON.stringify(result(state, "wait_loading", { wait: true }));
     default:
@@ -692,7 +698,7 @@ async function runInternal(idx, profile, options) {
       continue;
     }
     history.push(res);
-    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready") break;
+    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry") break;
     if (res.action === "done") break;
     const wait = await waitAfterActionInternal(idx || 0, res, opts);
     if (wait && (opts.includeWaits || !wait.ok)) history.push(wait);

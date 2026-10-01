@@ -130,6 +130,8 @@ def print_dom_summary(dom_result: Any, title: str) -> None:
             extra = f" | đã fill form{': ' + shop if shop else ''}"
         elif action == "onepiece_lottery_already_applied":
             extra = " | đã nộp trước đó"
+        elif action == "fail_no_retry":
+            extra = " | FAIL_NO_RETRY"
         elif action == "wait_timeout":
             last = step.get("last") if isinstance(step.get("last"), dict) else {}
             extra = f" | timeout ở {last.get('state') or '?'}"
@@ -514,6 +516,29 @@ def main() -> int:
                     gold_status="SUCCESS",
                     chiu_status="FORM_FILLED",
                     notes="gold_done; onepiece_form_filled_no_submit",
+                    crane_result=crane_result,
+                )
+        elif final_state == "ymd_common_error_no_retry":
+            append_run_event(
+                args,
+                "final",
+                status="FAIL_NO_RETRY",
+                error_details="member_or_system_error",
+                gold_status="FAIL_NO_RETRY",
+                chiu_status="FAIL_NO_RETRY",
+                notes="common_error_no_retry",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAIL_NO_RETRY",
+                    "member_or_system_error",
+                    gold_status="FAIL_NO_RETRY",
+                    chiu_status="FAIL_NO_RETRY",
+                    notes="common_error_no_retry",
                     crane_result=crane_result,
                 )
         elif not args.no_submit and final_state in ("store_sale_tab", "ready_for_chiu_store_sale"):
