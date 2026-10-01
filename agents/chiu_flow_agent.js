@@ -372,6 +372,8 @@ function pageProgram(profile, options, mode) {
     { pre: "13", area: "練馬区", shopNo: "258", shopName: "ﾃｯｸﾗﾝﾄﾞ練馬本店" },
     { pre: "13", area: "練馬区", shopNo: "219", shopName: "ﾃｯｸﾗﾝﾄﾞ大泉学園店PC館" },
     { pre: "13", area: "練馬区", shopNo: "809", shopName: "ﾃｯｸﾗﾝﾄﾞ平和台駅前店" },
+    { pre: "13", area: "品川区", shopNo: "468", shopName: "LABI LIFE SELECT 品川大井町" },
+    { pre: "13", area: "目黒区", shopNo: "230", shopName: "LABI自由が丘" },
     { pre: "13", area: "豊島区", shopNo: "7", shopName: "LABI池袋本店" },
     { pre: "13", area: "新宿区", shopNo: "1100", shopName: "LABI新宿西口館" },
     { pre: "13", area: "渋谷区", shopNo: "1020", shopName: "LABI渋谷" }
@@ -396,37 +398,42 @@ function pageProgram(profile, options, mode) {
       (q('#banner_impression-banner_topics_0000008430') && q('#banner_impression-banner_topics_0000008430').closest("a")) ||
       qa('a').find(function (el) { return /ONE PIECE|ワンピース|抽選販売/.test(text(el) + " " + String(el.href || "")); });
   }
-  function ensureSyntheticShopRadio(store) {
-    const container = q("#container") || q("form") || document.body;
-    let radio = q('input[type="radio"][value="' + store.shopNo + '"]', container) || q('input[type="radio"][value="' + store.shopNo + '"]');
-    if (radio) return radio;
-    radio = document.createElement("input");
-    radio.type = "radio";
-    radio.id = "shop";
-    radio.className = "shop";
-    radio.name = store.area;
-    radio.value = store.shopNo;
-    radio.style.display = "none";
-    container.appendChild(radio);
-    return radio;
+  function selectHasValue(select, value) {
+    return qa("option", select).some(function (option) { return String(option.value) === String(value); });
+  }
+  function findShopRadio(store) {
+    const wantedName = normalizeTextValue(store.shopName);
+    const labels = qa("#container label, label.shopLabels, label#shopLabels");
+    const byLabel = labels.find(function (label) {
+      return normalizeTextValue(text(label)).indexOf(wantedName) >= 0;
+    });
+    if (byLabel) {
+      const radio = q('input[type="radio"]', byLabel);
+      if (radio) return { radio: radio, label: text(byLabel) };
+    }
+    const byValue = q('#container input[type="radio"][value="' + store.shopNo + '"]') ||
+      q('input[type="radio"][value="' + store.shopNo + '"]');
+    if (byValue) return { radio: byValue, label: text(byValue.closest("label") || byValue) };
+    return null;
   }
   function selectOnepieceStore(store) {
     if (!setSelect("#pre", store.pre)) return { ok: false, missing: "prefecture" };
     const areaSelect = q("#area");
     if (!areaSelect) return { ok: false, missing: "area_select" };
-    if (!setSelect("#area", store.area)) {
-      const opt = document.createElement("option");
-      opt.value = store.area;
-      opt.textContent = store.area;
-      areaSelect.appendChild(opt);
-      setSelect("#area", store.area);
+    if (!selectHasValue(areaSelect, store.area)) {
+      return { ok: false, wait: true, missing: "area_option", expectedArea: store.area };
     }
-    const radio = ensureSyntheticShopRadio(store);
+    if (String(areaSelect.value) !== String(store.area) && !setSelect("#area", store.area)) {
+      return { ok: false, wait: true, missing: "area_select_value", expectedArea: store.area };
+    }
+    const found = findShopRadio(store);
+    if (!found) return { ok: false, wait: true, missing: "shop_radio", expectedShop: store.shopName };
+    const radio = found.radio;
     radio.checked = true;
     radio.dispatchEvent(new Event("input", { bubbles: true }));
     radio.dispatchEvent(new Event("change", { bubbles: true }));
-    setField("#selected_shop_no", store.shopNo);
-    return { ok: true, store: store };
+    setField("#selected_shop_no", radio.value || store.shopNo);
+    return { ok: true, store: store, selectedShopNo: radio.value || store.shopNo, selectedShopLabel: found.label };
   }
   function fillOnepieceForm() {
     const product = q('input[type="radio"][name="items[]"][value="01"]') || q('input[type="radio"][name="items[]"]');
@@ -436,13 +443,20 @@ function pageProgram(profile, options, mode) {
     }
     const store = preferredOnepieceStore();
     const selected = selectOnepieceStore(store);
+    if (selected.wait) return selected;
     if (!selected.ok) return selected;
     setField('#selected_campaign', val("selected_campaign", "onepiece_campaign"));
     setChecked('input[name="check_privacy"]', true);
-    const btn = q("button#entry") || qa('button,input[type="submit"]').find(function (el) { return /応募内容の確認へ進む/.test(String(el.value || "") + text(el)); });
+    const btn = q("button#entry") ||
+      qa('button,input[type="submit"],input[type="button"]').find(function (el) {
+        return /応募内容の確認へ進む/.test(String(el.value || "") + text(el));
+      });
     if (!btn) return { ok: false, missing: "entry_button", store: store };
+    if (options.submit === false || options.dryRun) {
+      return { ok: true, dryRun: true, store: store, selectedShopNo: selected.selectedShopNo, selectedShopLabel: selected.selectedShopLabel };
+    }
     clickElement(btn);
-    return { ok: true, store: store };
+    return { ok: true, store: store, selectedShopNo: selected.selectedShopNo, selectedShopLabel: selected.selectedShopLabel };
   }
   function currentScreen() {
     const b = bodyText();
@@ -607,8 +621,18 @@ function pageProgram(profile, options, mode) {
     }
     case "onepiece_lottery_apply_form": {
       const filled = fillOnepieceForm();
+      if (filled.wait) return JSON.stringify(result(state, "wait_onepiece_store_render", filled));
       if (!filled.ok) return JSON.stringify(fail(state, "fill_onepiece_lottery_form_failed", filled));
-      return JSON.stringify(result(state, "fill_onepiece_lottery_form_and_confirm", { store: filled.store }));
+      if (filled.dryRun) return JSON.stringify(result("onepiece_lottery_form_filled", "fill_onepiece_lottery_form_no_submit", {
+        store: filled.store,
+        selectedShopNo: filled.selectedShopNo,
+        selectedShopLabel: filled.selectedShopLabel
+      }));
+      return JSON.stringify(result(state, "fill_onepiece_lottery_form_and_confirm", {
+        store: filled.store,
+        selectedShopNo: filled.selectedShopNo,
+        selectedShopLabel: filled.selectedShopLabel
+      }));
     }
     case "onepiece_lottery_apply_confirm": {
       const btn = qa("button,input[type=submit]").find(function (el) { return /応募を確定する/.test(String(el.value || "") + text(el)); }) || q("button#entry");

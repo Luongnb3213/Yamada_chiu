@@ -493,6 +493,29 @@ def main() -> int:
                     notes="gold_done; onepiece_lottery_submitted",
                     crane_result=crane_result,
                 )
+        elif final_state == "onepiece_lottery_form_filled":
+            append_run_event(
+                args,
+                "final",
+                status="FORM_FILLED",
+                error_details="",
+                gold_status="SUCCESS",
+                chiu_status="FORM_FILLED",
+                notes="gold_done; onepiece_form_filled_no_submit",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FORM_FILLED",
+                    "",
+                    gold_status="SUCCESS",
+                    chiu_status="FORM_FILLED",
+                    notes="gold_done; onepiece_form_filled_no_submit",
+                    crane_result=crane_result,
+                )
         elif not args.no_submit and final_state in ("store_sale_tab", "ready_for_chiu_store_sale"):
             raise FlowResultError(
                 f"DOM chưa submit One Piece: last_state={final_state}",

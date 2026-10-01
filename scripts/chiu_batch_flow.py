@@ -74,6 +74,7 @@ def runnable_rows(
     sheet_name: str,
     limit: int,
     allowed_device_ids: set[str] | None = None,
+    balance_device_ids: list[str] | None = None,
 ) -> tuple[str, list[dict]]:
     wb = openpyxl.load_workbook(xlsx, data_only=True)
     try:
@@ -105,7 +106,9 @@ def runnable_rows(
             chiu_status_raw = cell_text(row[chiu_status_pos]) if chiu_status_pos is not None and chiu_status_pos < len(row) else ""
             gold_status = normalize_status(gold_status_raw)
             chiu_status = normalize_status(chiu_status_raw)
-            if chiu_status in ("SUCCESS", "FAIL_NO_RETRY") or status == "PROCESSING":
+            if "FAIL_NO_RETRY" in (status, gold_status, chiu_status):
+                continue
+            if chiu_status in ("SUCCESS", "FORM_FILLED") or status in ("SUCCESS", "PROCESSING", "FORM_FILLED"):
                 continue
             if status not in ("", "PENDING", "FAILED") and gold_status not in ("", "PENDING", "FAILED"):
                 continue
@@ -114,8 +117,29 @@ def runnable_rows(
                 continue
             container_id = cell_text(row[container_pos]) if container_pos is not None and container_pos < len(row) else ""
             selected.append({"row": row_number, "device_id": preferred_device, "container_id": container_id})
-            if limit > 0 and len(selected) >= limit:
+            if not balance_device_ids and limit > 0 and len(selected) >= limit:
                 break
+        if balance_device_ids and limit > 0:
+            queues = {device_id: [] for device_id in balance_device_ids}
+            fallback_index = 0
+            for task in selected:
+                preferred = str(task.get("device_id") or "")
+                if preferred in queues:
+                    target = preferred
+                else:
+                    target = balance_device_ids[fallback_index % len(balance_device_ids)]
+                    fallback_index += 1
+                queues[target].append(task)
+            balanced: list[dict] = []
+            while len(balanced) < limit and any(queues.values()):
+                for device_id in balance_device_ids:
+                    if queues[device_id]:
+                        balanced.append(queues[device_id].pop(0))
+                        if len(balanced) >= limit:
+                            break
+            selected = balanced
+        elif limit > 0:
+            selected = selected[:limit]
         return ws.title, selected
     finally:
         wb.close()
@@ -171,7 +195,7 @@ def resolve_device_ids(value: str) -> list[str]:
         ids = [str(device.get("id") or "").strip() for device in devices if device.get("id")]
         if not ids:
             raise RuntimeError("Không thấy iPhone USB nào qua Frida.")
-        return [random.choice(ids)]
+        return ids
     ids = [part.strip() for part in raw.split(",") if part.strip()]
     return ids or ["auto"]
 
@@ -354,8 +378,9 @@ def main() -> int:
         return 1
 
     requested_device = (args.device_id or "auto").strip().lower()
-    allowed_device_ids = None if requested_device in ("all", "*", "tat-ca", "tất-cả") else set(device_ids)
-    sheet, tasks = runnable_rows(xlsx, args.sheet, args.limit, allowed_device_ids)
+    allowed_device_ids = set(device_ids)
+    balance_device_ids = device_ids if len(device_ids) > 1 else None
+    sheet, tasks = runnable_rows(xlsx, args.sheet, args.limit, allowed_device_ids, balance_device_ids)
     print(f"[batch] Sheet={sheet} | số nick={'full' if args.limit == 0 else args.limit} | chọn {len(tasks)} row", flush=True)
     print(f"[batch] Devices: {', '.join(device_ids)}", flush=True)
     if allowed_device_ids is not None:
