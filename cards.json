@@ -1,6 +1,62 @@
 [
-  { "credit_card_number": "4924535042165506", "credit_card_exp": "01/31", "credit_card_cvv": "216" },
-  { "credit_card_number": "4924535032706566", "credit_card_exp": "01/31", "credit_card_cvv": "836" },
-  { "credit_card_number": "4924535031543549", "credit_card_exp": "02/31", "credit_card_cvv": "019" },
-  { "credit_card_number": "4924535040096778", "credit_card_exp": "02/31", "credit_card_cvv": "679" }
+  {
+    "credit_card_number": "4924535032706566",
+    "credit_card_exp": "01/31",
+    "credit_card_cvv": "836"
+  },
+  {
+    "credit_card_number": "4924535031543549",
+    "credit_card_exp": "02/31",
+    "credit_card_cvv": "019"
+  },
+  {
+    "credit_card_number": "4924535040096778",
+    "credit_card_exp": "02/31",
+    "credit_card_cvv": "679"
+  },
+  {
+    "credit_card_number": "4924535041013244",
+    "credit_card_exp": "01/31",
+    "credit_card_cvv": "319"
+  },
+  {
+    "credit_card_number": "4924535022611487",
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "708"
+  },
+  {
+    "credit_card_number": "4924535012632782",
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "007"
+  },
+  {
+    "credit_card_number": "4924535042165506",
+    "credit_card_exp": "01/31",
+    "credit_card_cvv": "216"
+  },
+  {
+    "credit_card_number": "492453504315794",
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "229"
+  },
+  {
+    "_comment": "New cards kept here for later reuse. card_rotation.py ignores this item because it has no top-level credit_card_number/exp/cvv.",
+    "_old_cards": [
+      {
+        "credit_card_number": "4924535022824759",
+        "credit_card_exp": "10/31",
+        "credit_card_cvv": "733"
+      },
+      {
+        "credit_card_number": "4924535014141089",
+        "credit_card_exp": "10/31",
+        "credit_card_cvv": "894"
+      },
+      {
+        "credit_card_number": "4924535033756321",
+        "credit_card_exp": "10/31",
+        "credit_card_cvv": "594"
+      }
+    ]
+  }
 ]
