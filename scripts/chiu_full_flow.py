@@ -21,7 +21,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from src.connections.xlsx_connection import excel_write_lock  # noqa: E402
 from chiu_profile_from_excel import load_row, profile_from_record, write_profile_js  # noqa: E402
-from card_rotation import apply_card_rotation  # noqa: E402
+from card_rotation import apply_card_rotation, masked_card, pick_alternate_card, wait_for_card_cooldown  # noqa: E402
 
 
 EMAIL_OTP_PROCESS_TIMEOUT_SECONDS = 120
@@ -125,6 +125,8 @@ def print_dom_summary(dom_result: Any, title: str) -> None:
         extra = ""
         if step.get("needs_otp") or action == "need_login_otp":
             extra = " | cần OTP"
+        elif step.get("needs_login_url") or action == "need_login_url":
+            extra = " | cần login URL từ mail"
         elif action == "fill_onepiece_lottery_form_and_confirm":
             store = step.get("store") if isinstance(step.get("store"), dict) else {}
             shop = store.get("shopName") or store.get("area") or ""
@@ -134,6 +136,8 @@ def print_dom_summary(dom_result: Any, title: str) -> None:
         elif action == "fail_no_retry":
             reason = str(step.get("reason") or "").strip()
             extra = " | FAIL_NO_RETRY" + (f": {reason}" if reason else "")
+        elif action == "card_unusable":
+            extra = " | thẻ bị từ chối"
         elif action == "wait_timeout":
             last = step.get("last") if isinstance(step.get("last"), dict) else {}
             extra = f" | timeout ở {last.get('state') or '?'}"
@@ -175,6 +179,18 @@ def needs_fresh_otp(dom_result: Any) -> bool:
     return False
 
 
+def needs_login_url(dom_result: Any) -> bool:
+    if not isinstance(dom_result, dict):
+        return False
+    items = dom_result.get("history") if isinstance(dom_result.get("history"), list) else [dom_result]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("needs_login_url") or item.get("action") == "need_login_url":
+            return True
+    return False
+
+
 def terminal_dom_error(dom_result: Any) -> str:
     if not isinstance(dom_result, dict):
         return "DOM không trả JSON hợp lệ."
@@ -184,7 +200,7 @@ def terminal_dom_error(dom_result: Any) -> str:
     if isinstance(history, list) and history:
         last = next((item for item in reversed(history) if isinstance(item, dict)), {})
         if last and last.get("ok") is False:
-            if last.get("needs_otp"):
+            if last.get("needs_otp") or last.get("needs_login_url"):
                 return ""
             if last.get("state") == "no_webview_or_no_result":
                 return "Chưa thấy WKWebView của app Yamada. App có thể chưa mở xong, đang trắng màn, hoặc Frida attach nhầm/attach quá sớm."
@@ -211,6 +227,69 @@ def fetch_login_otp(xlsx: Path, sheet_name: str, row: int) -> str:
     if not isinstance(result, dict):
         return ""
     return str(result.get("otp") or "").strip()
+
+
+def fetch_login_url(xlsx: Path, sheet_name: str, row: int) -> str:
+    output = run_cmd_output(
+        [
+            sys.executable,
+            "scripts/fetch_chiu_login_url.py",
+            "--xlsx",
+            str(xlsx),
+            "--sheet",
+            sheet_name,
+            "--row",
+            str(row),
+        ],
+        "Lấy login URL từ email",
+        timeout=EMAIL_OTP_PROCESS_TIMEOUT_SECONDS,
+    )
+    result = parse_json_from_output(output)
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("login_url") or "").strip()
+
+
+def card_from_profile(profile: dict[str, Any]) -> dict[str, str]:
+    card = {
+        "credit_card_number": str(profile.get("credit_card_number") or "").strip(),
+        "credit_card_exp": str(profile.get("credit_card_exp") or "").strip(),
+        "credit_card_cvv": str(profile.get("credit_card_cvv") or "").strip(),
+    }
+    return card if all(card.values()) else {}
+
+
+def retry_gold_payment_with_alternate_card(
+    args: argparse.Namespace,
+    xlsx: Path,
+    profile: dict[str, Any],
+    dom_result: Any,
+) -> Any:
+    if latest_state(dom_result) not in ("gold_card_unusable", "gold_card_unusable_no_retry"):
+        return dom_result
+
+    current_card = card_from_profile(profile)
+    alternate_card = pick_alternate_card(args.row, current_card)
+    if not alternate_card:
+        print("[card] Thẻ bị từ chối và pool không còn thẻ khác để thử lần 2.", flush=True)
+        return dom_result
+
+    wait_for_card_cooldown(alternate_card, f"{args.row}:retry2")
+    profile_retry = dict(profile)
+    profile_retry.update(alternate_card)
+    profile_retry["card_retry_enabled"] = "true"
+    profile_retry["card_retry_attempt"] = "2"
+    profile_retry["card_retry_reason"] = "card_unusable"
+    write_profile_js(profile_retry, Path(args.profile_js))
+    print(
+        f"[card] Thẻ {masked_card(current_card)} bị từ chối; thử lại lần 2 bằng {masked_card(alternate_card)}.",
+        flush=True,
+    )
+    dom_output = run_cmd_output(build_dom_cmd(args), "Chạy DOM sau đổi thẻ lần 2")
+    print_prefixed_lines(dom_output, ("[chiu-dom]",))
+    retried_result = parse_json_from_output(dom_output)
+    print_dom_summary(retried_result, "sau đổi thẻ")
+    return retried_result
 
 
 def current_gold_status(xlsx: Path, sheet_name: str, row: int) -> str:
@@ -478,6 +557,21 @@ def main() -> int:
         print_prefixed_lines(dom_output, ("[chiu-dom]",))
         dom_result = parse_json_from_output(dom_output)
         print_dom_summary(dom_result, "lượt đầu")
+        if isinstance(dom_result, dict) and needs_login_url(dom_result):
+            login_url = fetch_login_url(xlsx, args.sheet, args.row)
+            if not login_url:
+                raise RuntimeError("Không lấy được login URL từ email.")
+            record, _, _ = load_row(xlsx, args.sheet, args.row)
+            profile_with_url = profile_from_record(record)
+            apply_card_rotation(profile_with_url, args.row, wait_cooldown=False)  # giữ đúng thẻ xoay theo dòng
+            profile_with_url["login_url"] = login_url
+            profile_with_url["login_url_source"] = "email_fresh"
+            write_profile_js(profile_with_url, Path(args.profile_js))
+            print("[email] Đã lấy login URL mới từ mail, mở link trong WebView.", flush=True)
+            dom_output = run_cmd_output(build_dom_cmd(args), "Chạy DOM sau login URL")
+            print_prefixed_lines(dom_output, ("[chiu-dom]",))
+            dom_result = parse_json_from_output(dom_output)
+            print_dom_summary(dom_result, "sau login URL")
         if isinstance(dom_result, dict) and needs_fresh_otp(dom_result):
             otp = fetch_login_otp(xlsx, args.sheet, args.row)
             if not otp:
@@ -493,6 +587,22 @@ def main() -> int:
             print_prefixed_lines(dom_output, ("[chiu-dom]",))
             dom_result = parse_json_from_output(dom_output)
             print_dom_summary(dom_result, "sau OTP")
+        if isinstance(dom_result, dict) and needs_login_url(dom_result):
+            login_url = fetch_login_url(xlsx, args.sheet, args.row)
+            if not login_url:
+                raise RuntimeError("Không lấy được login URL từ email.")
+            record, _, _ = load_row(xlsx, args.sheet, args.row)
+            profile_with_url = profile_from_record(record)
+            apply_card_rotation(profile_with_url, args.row, wait_cooldown=False)
+            profile_with_url["login_url"] = login_url
+            profile_with_url["login_url_source"] = "email_fresh"
+            write_profile_js(profile_with_url, Path(args.profile_js))
+            print("[email] Đã lấy login URL mới từ mail, mở link trong WebView.", flush=True)
+            dom_output = run_cmd_output(build_dom_cmd(args), "Chạy DOM sau login URL")
+            print_prefixed_lines(dom_output, ("[chiu-dom]",))
+            dom_result = parse_json_from_output(dom_output)
+            print_dom_summary(dom_result, "sau login URL")
+        dom_result = retry_gold_payment_with_alternate_card(args, xlsx, profile, dom_result)
         if registration_completed(dom_result):
             reg_status_val = "SUCCESS"
         dom_error = terminal_dom_error(dom_result)
@@ -575,16 +685,41 @@ def main() -> int:
                     notes="common_error_no_retry",
                     crane_result=crane_result,
                 )
-        elif final_state == "gold_card_unusable_no_retry":
+        elif final_state in ("gold_card_unusable", "gold_card_unusable_no_retry"):
+            append_run_event(
+                args,
+                "final",
+                status="FAILED",
+                error_details="card_unusable",
+                reg_status=reg_status_val,
+                gold_status="FAILED",
+                chiu_status="FAILED",
+                notes="card_unusable_after_retry_or_pool_empty",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAILED",
+                    "card_unusable",
+                    reg_status=reg_status_val,
+                    gold_status="FAILED",
+                    chiu_status="FAILED",
+                    notes="card_unusable_after_retry_or_pool_empty",
+                    crane_result=crane_result,
+                )
+        elif final_state == "login_identity_mismatch_no_retry":
             append_run_event(
                 args,
                 "final",
                 status="FAIL_NO_RETRY",
-                error_details="card_unusable",
+                error_details="login_identity_mismatch",
                 reg_status=reg_status_val,
                 gold_status="FAIL_NO_RETRY",
                 chiu_status="FAIL_NO_RETRY",
-                notes="card_unusable_no_retry",
+                notes="login_identity_mismatch_no_retry",
                 crane_result=crane_result,
             )
             if not args.defer_excel_write:
@@ -593,11 +728,61 @@ def main() -> int:
                     args.sheet,
                     args.row,
                     "FAIL_NO_RETRY",
-                    "card_unusable",
+                    "login_identity_mismatch",
                     reg_status=reg_status_val,
                     gold_status="FAIL_NO_RETRY",
                     chiu_status="FAIL_NO_RETRY",
-                    notes="card_unusable_no_retry",
+                    notes="login_identity_mismatch_no_retry",
+                    crane_result=crane_result,
+                )
+        elif final_state == "login_help_redirect_no_retry":
+            append_run_event(
+                args,
+                "final",
+                status="FAIL_NO_RETRY",
+                error_details="login_help_redirect",
+                reg_status=reg_status_val,
+                gold_status="FAIL_NO_RETRY",
+                chiu_status="FAIL_NO_RETRY",
+                notes="login_help_redirect_no_retry",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAIL_NO_RETRY",
+                    "login_help_redirect",
+                    reg_status=reg_status_val,
+                    gold_status="FAIL_NO_RETRY",
+                    chiu_status="FAIL_NO_RETRY",
+                    notes="login_help_redirect_no_retry",
+                    crane_result=crane_result,
+                )
+        elif final_state == "login_email_auth_failed_no_retry":
+            append_run_event(
+                args,
+                "final",
+                status="FAIL_NO_RETRY",
+                error_details="login_email_auth_failed",
+                reg_status=reg_status_val,
+                gold_status="FAIL_NO_RETRY",
+                chiu_status="FAIL_NO_RETRY",
+                notes="login_email_auth_failed_no_retry",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAIL_NO_RETRY",
+                    "login_email_auth_failed",
+                    reg_status=reg_status_val,
+                    gold_status="FAIL_NO_RETRY",
+                    chiu_status="FAIL_NO_RETRY",
+                    notes="login_email_auth_failed_no_retry",
                     crane_result=crane_result,
                 )
         elif not args.no_submit and final_state in ("store_sale_tab", "ready_for_chiu_store_sale"):

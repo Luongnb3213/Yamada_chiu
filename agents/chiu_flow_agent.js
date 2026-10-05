@@ -328,6 +328,23 @@ function pageProgram(profile, options, mode) {
     if (Number.isFinite(n) && n >= 0) return n;
     return 2000;
   }
+  function isCardRetryEnabled() {
+    return /^(1|true|yes|on)$/i.test(val("card_retry_enabled", "cardRetryEnabled"));
+  }
+  function cardRetryStorageKey() {
+    return [
+      "chiuCardRetrySubmitted",
+      val("email") || "-",
+      val("card_retry_attempt", "cardRetryAttempt") || "retry",
+      val("credit_card_number", "card_number").replace(/[^0-9]/g, "").slice(-4) || "card"
+    ].join(":");
+  }
+  function cardRetryAlreadySubmitted() {
+    try { return sessionStorage.getItem(cardRetryStorageKey()) === "1"; } catch (e) { return false; }
+  }
+  function markCardRetrySubmitted() {
+    try { sessionStorage.setItem(cardRetryStorageKey(), "1"); } catch (e) {}
+  }
   function delayBeforeFlowComplete() {
     if (options.submit === false || options.dryRun) return;
     const ms = flowCompleteDelayMs();
@@ -564,7 +581,13 @@ function pageProgram(profile, options, mode) {
     const b = bodyText();
     const title = document.title || "";
     const href = location.href || "";
+    const cardUnusable = /お取扱出来ないクレジットカード|入力された内容にエラーがあります/.test(b) && /クレジット/.test(b);
+    const canRetryCardOnThisPage = isCardRetryEnabled() && !cardRetryAlreadySubmitted() && q('input[name="ccNumber"]') && q('select[name="ccExpirationMonth"]');
     if (/会員でないか、システムエラーのため表示できません/.test(b)) return "ymd_common_error_no_retry";
+    if (
+      href.indexOf("profilepassport.jp") >= 0 &&
+      (/個別情報開示/.test(title) || /トラッキングの許可|位置情報等のデータの利用/.test(b) || q(".btn-close"))
+    ) return "tracking_location_consent";
     if (registrationActive()) {
       const regState = registerScreen();
       if (regState) return regState;
@@ -574,9 +597,14 @@ function pageProgram(profile, options, mode) {
     if (q('form[action*="lotterysale001"]') && q("#pre") && q("#area") && q("#entry")) return "onepiece_lottery_apply_form";
     if (/応募確認/.test(title + " " + b) && /応募を確定する/.test(b) && q('form[action*="lotterysale002"]')) return "onepiece_lottery_apply_confirm";
     if (/lotterysale003/.test(href) || /応募完了|応募を受け付けました|ご応募ありがとうございました/.test(title + " " + b)) return "onepiece_lottery_complete";
-    if (/お取扱出来ないクレジットカード|入力された内容にエラーがあります/.test(b) && /クレジット/.test(b)) return "gold_card_unusable_no_retry";
+    if (cardUnusable && !canRetryCardOnThisPage) return "gold_card_unusable";
     if (q('input[name="login_address"]') && q('input[name="login_address_check"]')) return "login_email_input";
     if (q('input[name="inputcode"]') && /認証コード/.test(b) && /ログイン|メール/.test(b)) return "login_auth_code_input";
+    if (/changephone/.test(href) && /action=chgauth/.test(href) && /ご指定のメールアドレスは正常に認証できませんでした/.test(b)) return "login_email_auth_failed_no_retry";
+    if (/changephone/.test(href) && /action=chgauth/.test(href) && /メールに記載されたURLをご確認ください/.test(b) && !q('input[name="inputcode"]')) return "login_email_url_required";
+    if (/changephone/.test(href) && /action=chg003/.test(href) && /ヘルプ/.test(title + " " + b) && /お問合せ|お問い合わせ/.test(b)) return "login_help_redirect_no_retry";
+    if (/メールアドレス、暗証番号、電話番号に誤りがあります/.test(b)) return "login_identity_mismatch_no_retry";
+    if (/changephone/.test(href) && /action=chg003/.test(href) && q('input[name="mail_address"]') && q('input[name="password"]') && q('input[name="tel"]')) return "login_link_identity_input";
     if (/下記メールアドレス|送信/.test(b) && /changephone|chgauth/.test(href + " " + document.documentElement.innerHTML) && !q('input[name="inputcode"]')) return "login_email_confirm";
     if (/ログイン完了/.test(title + " " + b)) return "login_complete";
     if (/会員登録/.test(title + " " + b) && /ログイン/.test(b) && q('a[href*="changephone"][href*="chg001"], a.but2')) return "member_register_top_logged_out";
@@ -626,6 +654,44 @@ function pageProgram(profile, options, mode) {
       clickSubmitValue("送信") || submitForm(q("form"));
       return JSON.stringify(result(state, "send_login_auth_email"));
     }
+    case "login_email_url_required": {
+      const loginUrl = val("login_url", "loginUrl");
+      if (!loginUrl) return JSON.stringify(fail(state, "need_login_url", { needs_login_url: true }));
+      if (options.submit !== false && !options.dryRun) location.href = loginUrl;
+      return JSON.stringify(result(state, "open_login_url_from_email"));
+    }
+    case "login_link_identity_input": {
+      const email = val("email");
+      const pin = normalizeDigits(val("pin", "password"));
+      const phone = normalizeDigits(val("phone", "tel"));
+      const missing = requireFields([
+        { name: "email", value: email },
+        { name: "pin", value: pin },
+        { name: "phone", value: phone }
+      ]);
+      if (missing.length) return JSON.stringify(fail(state, "missing_login_identity_data", { missing: missing }));
+      setChecked('input[name="register"][value="mail_address"]', true);
+      setField('input[name="mail_address"]', email);
+      setField('input[name="password"]', pin);
+      setField('input[name="tel"]', phone);
+      clickSubmitValue("OK") || submitForm(q('form[action*="action=chg003"]') || q("form"));
+      return JSON.stringify(result(state, "fill_login_identity_and_submit", { email: email }));
+    }
+    case "login_identity_mismatch_no_retry":
+      return JSON.stringify(result(state, "fail_no_retry", {
+        noRetry: true,
+        reason: "login_identity_mismatch"
+      }));
+    case "login_help_redirect_no_retry":
+      return JSON.stringify(result(state, "fail_no_retry", {
+        noRetry: true,
+        reason: "login_help_redirect"
+      }));
+    case "login_email_auth_failed_no_retry":
+      return JSON.stringify(result(state, "fail_no_retry", {
+        noRetry: true,
+        reason: "login_email_auth_failed"
+      }));
     case "login_auth_code_input": {
       const code = val("auth_code");
       if (!code) return JSON.stringify(fail(state, "need_login_otp", { needs_otp: true }));
@@ -714,6 +780,7 @@ function pageProgram(profile, options, mode) {
           waitedMs: Date.now() - (window.__chiuCreditFirstSeen || Date.now())
         }));
       }
+      if (isCardRetryEnabled()) markCardRetrySubmitted();
       if (!submitCreditPaymentForm()) return JSON.stringify(fail(state, "credit_payment_submit_failed", filled));
       return JSON.stringify(result(state, "fill_credit_card_and_next", { expMonth: exp.month, expYear: exp.year }));
     }
@@ -875,9 +942,9 @@ function pageProgram(profile, options, mode) {
         noRetry: true,
         reason: "member_or_system_error"
       }));
+    case "gold_card_unusable":
     case "gold_card_unusable_no_retry":
-      return JSON.stringify(result(state, "fail_no_retry", {
-        noRetry: true,
+      return JSON.stringify(result(state, "card_unusable", {
         reason: "card_unusable"
       }));
     case "loading":
@@ -923,7 +990,7 @@ async function runInternal(idx, profile, options) {
       continue;
     }
     history.push(res);
-    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable_no_retry") break;
+    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable" || res.state === "gold_card_unusable_no_retry" || res.state === "login_identity_mismatch_no_retry" || res.state === "login_help_redirect_no_retry" || res.state === "login_email_auth_failed_no_retry") break;
     if (res.action === "done") break;
     const wait = await waitAfterActionInternal(idx || 0, res, opts);
     if (wait && (opts.includeWaits || !wait.ok)) history.push(wait);
@@ -946,6 +1013,8 @@ async function waitAfterActionInternal(idx, previous, options) {
     "open_login",
     "fill_login_email_and_submit",
     "send_login_auth_email",
+    "open_login_url_from_email",
+    "fill_login_identity_and_submit",
     "fill_login_otp_and_submit",
     "open_app_top_after_login",
     "open_new_member_registration",
@@ -965,6 +1034,7 @@ async function waitAfterActionInternal(idx, previous, options) {
     "fill_credit_card_and_next",
     "confirm_gold_payment",
     "back_after_gold_complete",
+    "close_tracking_consent",
     "open_onepiece_lottery_notice",
     "open_onepiece_lottery_apply_form",
     "fill_onepiece_lottery_form_and_confirm",

@@ -72,6 +72,15 @@ def cell_text(value: object) -> str:
     return str(value).strip()
 
 
+def normalize_jp_phone(value: object) -> str:
+    phone = "".join(ch for ch in cell_text(value) if ch.isdigit())
+    if phone.startswith("81") and len(phone) >= 11:
+        phone = "0" + phone[2:]
+    if phone and not phone.startswith("0") and len(phone) in (9, 10):
+        phone = "0" + phone
+    return phone
+
+
 def read_config_xlsx() -> str:
     config_path = ROOT_DIR / "config.json"
     if not config_path.exists():
@@ -156,6 +165,8 @@ def profile_from_record(record: dict) -> dict:
     profile = {}
     for key in BASE_KEYS:
         value = str(record.get(key) or "").strip()
+        if key == "phone":
+            value = normalize_jp_phone(value)
         if value:
             profile[key] = value
     profile["row"] = {key: value for key, value in record.items() if str(value or "").strip()}

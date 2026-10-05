@@ -7,7 +7,8 @@ của cổng thanh toán sandbox, không phải thẻ thật.
 Chọn thẻ theo SỐ DÒNG Excel:
     card = CARDS[(row - 2) % len(CARDS)]
 => tất định, an toàn khi chạy song song nhiều device và khi chạy lại dòng lỗi
-(mỗi nick luôn dùng đúng một thẻ, không "nhảy thẻ" giữa các lần retry).
+(mỗi nick dùng thẻ mặc định theo dòng; riêng lỗi thẻ bị từ chối ở flow Gold
+được phép thử thêm thẻ kế tiếp trong pool đúng 1 lần).
 
 Định dạng cards.json (xem cards.example.json): danh sách object, mỗi thẻ 3 trường
 `credit_card_number`, `credit_card_exp` (MM/YY), `credit_card_cvv`. Nếu file
@@ -76,16 +77,43 @@ def load_cards() -> list[dict]:
     return cards
 
 
-def pick_card(row_number: object) -> dict:
+def card_index_for_row(row_number: object, card_count: int) -> int:
+    if card_count <= 0:
+        return 0
+    try:
+        return (int(row_number) - 2) % card_count
+    except (TypeError, ValueError):
+        return 0
+
+
+def pick_card(row_number: object, *, offset: int = 0) -> dict:
     """Trả về thẻ cho dòng Excel `row_number` (dòng dữ liệu đầu tiên = 2 -> thẻ 0)."""
     cards = load_cards()
     if not cards:
         return {}
-    try:
-        idx = (int(row_number) - 2) % len(cards)
-    except (TypeError, ValueError):
-        idx = 0
+    idx = (card_index_for_row(row_number, len(cards)) + int(offset or 0)) % len(cards)
     return dict(cards[idx])
+
+
+def pick_alternate_card(row_number: object, current_card: dict | None = None) -> dict:
+    """Pick thẻ kế tiếp trong pool, khác thẻ hiện tại. Trả {} nếu pool không còn thẻ khác."""
+    cards = load_cards()
+    if len(cards) <= 1:
+        return {}
+
+    current_key = card_key(current_card or {}) if current_card else ""
+    start_idx = card_index_for_row(row_number, len(cards))
+    if current_key:
+        for index, card in enumerate(cards):
+            if card_key(card) == current_key:
+                start_idx = index
+                break
+
+    for offset in range(1, len(cards)):
+        candidate = dict(cards[(start_idx + offset) % len(cards)])
+        if not current_key or card_key(candidate) != current_key:
+            return candidate
+    return {}
 
 
 def card_cooldown_seconds() -> float:
