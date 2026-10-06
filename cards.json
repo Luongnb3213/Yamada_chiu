@@ -1,75 +1,5 @@
 [
   {
-    "credit_card_number": "4924535041013244",
-    "credit_card_exp": "01/31",
-    "credit_card_cvv": "319"
-  },
-  {
-    "credit_card_number": "4924535042165506",
-    "credit_card_exp": "01/31",
-    "credit_card_cvv": "216"
-  },
-  {
-    "credit_card_number": "4924535032706566",
-    "credit_card_exp": "01/31",
-    "credit_card_cvv": "836"
-  },
-  {
-    "credit_card_number": "4924535031543549",
-    "credit_card_exp": "02/31",
-    "credit_card_cvv": "019"
-  },
-  {
-    "credit_card_number": "4924535040096778",
-    "credit_card_exp": "02/31",
-    "credit_card_cvv": "679"
-  },
-  {
-    "credit_card_number": "4924535032805608",
-    "credit_card_exp": "02/31",
-    "credit_card_cvv": "892"
-  },
-  {
-    "credit_card_number": "4924535020904264",
-    "credit_card_exp": "02/31",
-    "credit_card_cvv": "989"
-  },
-  {
-    "credit_card_number": "4924535022611487",
-    "credit_card_exp": "04/31",
-    "credit_card_cvv": "708"
-  },
-  {
-    "credit_card_number": "4924535043157494",
-    "credit_card_exp": "04/31",
-    "credit_card_cvv": "229"
-  },
-  {
-    "credit_card_number": "4924535005549456",
-    "credit_card_exp": "04/31",
-    "credit_card_cvv": "573"
-  },
-  {
-    "credit_card_number": "4924535012632782",
-    "credit_card_exp": "04/31",
-    "credit_card_cvv": "007"
-  },
-  {
-    "credit_card_number": "4924535007298334",
-    "credit_card_exp": "08/31",
-    "credit_card_cvv": "676"
-  },
-  {
-    "credit_card_number": "4924535022824759",
-    "credit_card_exp": "10/31",
-    "credit_card_cvv": "733"
-  },
-  {
-    "credit_card_number": "4924535033756321",
-    "credit_card_exp": "10/31",
-    "credit_card_cvv": "594"
-  },
-  {
     "credit_card_number": "4924535040591679",
     "credit_card_exp": "11/30",
     "credit_card_cvv": "253"
@@ -88,5 +18,84 @@
     "credit_card_number": "4924535031110273",
     "credit_card_exp": "11/30",
     "credit_card_cvv": "474"
+  },
+  {
+    "credit_card_number": "4924535041013244",
+    "credit_card_exp": "01/31",
+    "credit_card_cvv": "319"
+  },
+  {
+    "credit_card_number": "4924535031543549",
+    "credit_card_exp": "02/31",
+    "credit_card_cvv": "019"
+  },
+  {
+    "credit_card_number": "4924535022611487",
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "708"
+  },
+  {
+    "credit_card_number": "4924535043157494",
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "229"
+  },
+  {
+    "credit_card_number": "4924535005549456",
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "573"
+  },
+  {
+    "credit_card_exp": "01/31",
+    "credit_card_cvv": "216",
+    "_disabled_credit_card_number": "4924535042165506",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "01/31",
+    "credit_card_cvv": "836",
+    "_disabled_credit_card_number": "4924535032706566",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "02/31",
+    "credit_card_cvv": "679",
+    "_disabled_credit_card_number": "4924535040096778",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "02/31",
+    "credit_card_cvv": "892",
+    "_disabled_credit_card_number": "4924535032805608",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "04/31",
+    "credit_card_cvv": "007",
+    "_disabled_credit_card_number": "4924535012632782",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "08/31",
+    "credit_card_cvv": "676",
+    "_disabled_credit_card_number": "4924535007298334",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "10/31",
+    "credit_card_cvv": "733",
+    "_disabled_credit_card_number": "4924535022824759",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "10/31",
+    "credit_card_cvv": "594",
+    "_disabled_credit_card_number": "4924535033756321",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
+  },
+  {
+    "credit_card_exp": "02/31",
+    "credit_card_cvv": "989",
+    "_disabled_credit_card_number": "4924535020904264",
+    "_disabled_reason": "bi tu choi o batch 2026-10-06"
   }
 ]

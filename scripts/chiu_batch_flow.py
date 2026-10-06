@@ -609,7 +609,7 @@ def main() -> int:
                     avg = sum(success_durations) / len(success_durations)
                     log(f"[batch][{label}] Row {row} xong trong {row_elapsed:.1f}s | trung bình {avg:.1f}s/nick")
             if not stop_all.is_set() and not task_queues[device_id].empty():
-                time.sleep(random.uniform(2.0, 3.0))
+                time.sleep(random.uniform(19.0, 21.0))
 
     threads = [threading.Thread(target=worker, args=(device_id,), daemon=True) for device_id in device_ids]
     for thread in threads:
