@@ -638,11 +638,6 @@ function pageProgram(profile, options, mode) {
     email: val("email")
   }));
 
-  // Gold purchase is disabled: never open/submit the gold card payment pages.
-  if (/^(mypage_gold_not_registered|gold_membership_benefits|gold_payment_select|gold_credit_card_payment|gold_payment_confirm)$/.test(state)) {
-    return JSON.stringify(result("gold_not_registered_no_retry", "fail_no_retry", { noRetry: true, reason: "gold_not_registered", fromState: state }));
-  }
-
   switch (state) {
     case "register_email_input_logged_out": {
       navigateElement(q('a[href*="module=cancel"][href*="action=can001"]'));
@@ -1006,7 +1001,7 @@ async function runInternal(idx, profile, options) {
       continue;
     }
     history.push(res);
-    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable" || res.state === "gold_card_unusable_no_retry" || res.state === "login_identity_mismatch_no_retry" || res.state === "login_help_redirect_no_retry" || res.state === "login_email_auth_failed_no_retry" || res.state === "gold_not_registered_no_retry" || res.state === "login_identity_missing_no_retry") break;
+    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable" || res.state === "gold_card_unusable_no_retry" || res.state === "login_identity_mismatch_no_retry" || res.state === "login_help_redirect_no_retry" || res.state === "login_email_auth_failed_no_retry" || res.state === "login_identity_missing_no_retry") break;
     if (res.action === "done") break;
     const wait = await waitAfterActionInternal(idx || 0, res, opts);
     if (wait && (opts.includeWaits || !wait.ok)) history.push(wait);
@@ -1027,6 +1022,8 @@ async function waitAfterActionInternal(idx, previous, options) {
   const firstUrl = previous && previous.url;
   const expectsNavigation = [
     "open_login",
+    "back_to_first_screen",
+    "confirm_back_to_first_screen",
     "fill_login_email_and_submit",
     "send_login_auth_email",
     "open_login_url_from_email",

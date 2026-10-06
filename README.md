@@ -54,7 +54,7 @@ Trên UI có một checkbox bật/tắt **toàn bộ luồng mới**:
 
 CLI tương đương: `scripts/chiu_batch_flow.py ... --new-container`, truyền tiếp `--enable-register` (bật luồng đăng ký trong DOM) và `--container-mode create` (tạo container mới) xuống từng nick.
 
-## Thẻ sandbox xoay vòng (cards.json)
+## Thẻ sandbox theo device (cards.json)
 
 Thẻ thanh toán Gold **không còn lấy từ Excel** nữa mà nạp từ file `cards.json` ở gốc repo (đổi đường dẫn bằng env `YAMADA_CARDS_FILE`). Đây là thẻ test sandbox.
 
@@ -62,8 +62,10 @@ Thẻ thanh toán Gold **không còn lấy từ Excel** nữa mà nạp từ fil
   ```json
   [ { "credit_card_number": "...", "credit_card_exp": "MM/YY", "credit_card_cvv": "..." } ]
   ```
-- Chọn thẻ **theo số dòng Excel**: `card = CARDS[(row - 2) % số_thẻ]` — dòng dữ liệu đầu (row 2) → thẻ 0, cứ thế xoay vòng. Tất định nên an toàn khi chạy song song nhiều device và khi chạy lại dòng lỗi (mỗi nick luôn dùng đúng một thẻ).
-- Thẻ xoay **ghi đè** cột `credit_card_*` trong Excel (nếu còn). Nếu `cards.json` trống/không có → rơi về cột Excel như cũ.
+- Khi batch chạy nhiều device, `chiu_batch_flow.py` truyền danh sách device xuống từng worker. Mỗi device lấy cố định 1 thẻ chính theo thứ tự device trong batch. Ví dụ 10 device + 16 thẻ: 10 thẻ đầu là thẻ chính cho 10 máy, 6 thẻ sau là pool fallback.
+- Nếu HTML báo thẻ Gold bị từ chối/khoá, `chiu_full_flow.py` đổi sang 1 thẻ trong pool fallback và retry đúng 1 lần.
+- Khi chạy lẻ không có danh sách device, script vẫn fallback theo số dòng Excel để không vỡ flow cũ.
+- Thẻ được chọn **ghi đè** cột `credit_card_*` trong Excel (nếu còn). Nếu `cards.json` trống/không có → rơi về cột Excel như cũ.
 
 Logic ở `scripts/card_rotation.py`, được chèn vào profile tại `scripts/chiu_profile_from_excel.py` và nhánh rewrite OTP của `scripts/chiu_full_flow.py`; agent vẫn đọc `credit_card_number/exp/cvv` từ profile như trước.
 

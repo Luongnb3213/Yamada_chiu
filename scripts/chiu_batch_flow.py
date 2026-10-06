@@ -455,6 +455,7 @@ def main() -> int:
     if not args.direct_excel_write:
         run_dir.mkdir(parents=True, exist_ok=True)
         print(f"[batch] Deferred Excel write: worker logs ở {run_dir}", flush=True)
+    card_device_ids = ",".join(device_ids)
     task_queues: dict[str, queue.Queue[dict]] = {device_id: queue.Queue() for device_id in device_ids}
     queued_per_device = {device_id: 0 for device_id in device_ids}
     rr = 0
@@ -507,6 +508,8 @@ def main() -> int:
             device_id,
             "--container-mode",
             container_mode,
+            "--card-device-ids",
+            card_device_ids,
         ]
         if not args.direct_excel_write:
             cmd.extend([
@@ -605,6 +608,8 @@ def main() -> int:
                     success_durations.append(row_elapsed)
                     avg = sum(success_durations) / len(success_durations)
                     log(f"[batch][{label}] Row {row} xong trong {row_elapsed:.1f}s | trung bình {avg:.1f}s/nick")
+            if not stop_all.is_set() and not task_queues[device_id].empty():
+                time.sleep(random.uniform(2.0, 3.0))
 
     threads = [threading.Thread(target=worker, args=(device_id,), daemon=True) for device_id in device_ids]
     for thread in threads:

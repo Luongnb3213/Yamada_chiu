@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -202,6 +203,8 @@ def main() -> int:
     parser.add_argument("--row", type=int, default=None, help="Excel row number to export, e.g. 2.")
     parser.add_argument("--email", default="", help="Find row by email instead of first pending row.")
     parser.add_argument("--out", default=str(ROOT_DIR / "agents" / "current_profile.js"), help="Output JS file.")
+    parser.add_argument("--device-id", default=os.environ.get("FRIDA_DEVICE_ID", ""))
+    parser.add_argument("--card-device-ids", default=os.environ.get("YAMADA_CARD_DEVICE_IDS", ""))
     parser.add_argument("--print-only", action="store_true", help="Print profile JSON without writing JS.")
     args = parser.parse_args()
 
@@ -213,8 +216,13 @@ def main() -> int:
 
     record, row_number, sheet = load_row(xlsx_path, args.sheet, args.row, args.email)
     profile = profile_from_record(record)
-    apply_card_rotation(profile, row_number)  # thẻ xoay theo dòng, ghi đè cột Excel
-    metadata = {"xlsx": str(xlsx_path), "sheet": sheet, "row": row_number}
+    apply_card_rotation(
+        profile,
+        row_number,
+        device_id=args.device_id,
+        device_ids=args.card_device_ids,
+    )  # thẻ chính theo device, ghi đè cột Excel
+    metadata = {"xlsx": str(xlsx_path), "sheet": sheet, "row": row_number, "device_id": args.device_id}
 
     if args.print_only:
         print(json.dumps({"profile": profile, "source": metadata}, ensure_ascii=False, indent=2))

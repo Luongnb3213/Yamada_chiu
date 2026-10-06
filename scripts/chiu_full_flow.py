@@ -287,7 +287,12 @@ def retry_gold_payment_with_alternate_card(
         return dom_result
 
     current_card = card_from_profile(profile)
-    alternate_card = pick_alternate_card(args.row, current_card)
+    alternate_card = pick_alternate_card(
+        args.row,
+        current_card,
+        device_id=args.device_id,
+        device_ids=args.card_device_ids,
+    )
     if not alternate_card:
         print("[card] Thẻ bị từ chối và pool không còn thẻ khác để thử lần 2.", flush=True)
         return dom_result
@@ -495,6 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=40)
     parser.add_argument("--flow-complete-delay-ms", type=int, default=2000)
     parser.add_argument("--gold-payment-wait-timeout-ms", type=int, default=60000)
+    parser.add_argument("--card-device-ids", default=os.environ.get("YAMADA_CARD_DEVICE_IDS", ""))
     parser.add_argument("--event-log", default="", help="JSONL progress file for deferred/batch recovery.")
     parser.add_argument("--defer-excel-write", action="store_true", help="Write progress to --event-log only; batch merges Excel at the end.")
     return parser
@@ -567,6 +573,10 @@ def main() -> int:
                 *row_args,
                 "--out",
                 str(profile_js),
+                "--device-id",
+                args.device_id,
+                "--card-device-ids",
+                args.card_device_ids,
             ],
             "Đọc context từ Excel",
         )
@@ -584,7 +594,13 @@ def main() -> int:
                 raise RuntimeError("Không lấy được login URL từ email.")
             record, _, _ = load_row(xlsx, args.sheet, args.row)
             profile_with_url = profile_from_record(record)
-            apply_card_rotation(profile_with_url, args.row, wait_cooldown=False)  # giữ đúng thẻ xoay theo dòng
+            apply_card_rotation(
+                profile_with_url,
+                args.row,
+                device_id=args.device_id,
+                device_ids=args.card_device_ids,
+                wait_cooldown=False,
+            )  # giữ đúng thẻ chính theo device
             profile_with_url["login_url"] = login_url
             profile_with_url["login_url_source"] = "email_fresh"
             write_profile_js(profile_with_url, Path(args.profile_js))
@@ -599,7 +615,13 @@ def main() -> int:
                 raise RuntimeError("Không lấy được OTP login từ email.")
             record, _, _ = load_row(xlsx, args.sheet, args.row)
             profile_with_otp = profile_from_record(record)
-            apply_card_rotation(profile_with_otp, args.row, wait_cooldown=False)  # giữ đúng thẻ xoay theo dòng
+            apply_card_rotation(
+                profile_with_otp,
+                args.row,
+                device_id=args.device_id,
+                device_ids=args.card_device_ids,
+                wait_cooldown=False,
+            )  # giữ đúng thẻ chính theo device
             profile_with_otp["auth_code"] = otp
             profile_with_otp["auth_code_source"] = "email_fresh"
             write_profile_js(profile_with_otp, Path(args.profile_js))
@@ -614,7 +636,13 @@ def main() -> int:
                 raise RuntimeError("Không lấy được login URL từ email.")
             record, _, _ = load_row(xlsx, args.sheet, args.row)
             profile_with_url = profile_from_record(record)
-            apply_card_rotation(profile_with_url, args.row, wait_cooldown=False)
+            apply_card_rotation(
+                profile_with_url,
+                args.row,
+                device_id=args.device_id,
+                device_ids=args.card_device_ids,
+                wait_cooldown=False,
+            )
             profile_with_url["login_url"] = login_url
             profile_with_url["login_url_source"] = "email_fresh"
             write_profile_js(profile_with_url, Path(args.profile_js))
