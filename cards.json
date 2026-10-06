@@ -17,7 +17,7 @@
   {
     "credit_card_number": "4924535031543549",
     "credit_card_exp": "02/31",
-    "credit_card_cvv": "319"
+    "credit_card_cvv": "019"
   },
   {
     "credit_card_number": "4924535040096778",
@@ -32,7 +32,7 @@
   {
     "credit_card_number": "4924535020904264",
     "credit_card_exp": "02/31",
-    "credit_card_cvv": "898"
+    "credit_card_cvv": "989"
   },
   {
     "credit_card_number": "4924535022611487",
@@ -60,19 +60,9 @@
     "credit_card_cvv": "676"
   },
   {
-    "credit_card_number": "4924535013046198",
-    "credit_card_exp": "10/31",
-    "credit_card_cvv": "491"
-  },
-  {
     "credit_card_number": "4924535022824759",
     "credit_card_exp": "10/31",
-    "credit_card_cvv": "773"
-  },
-  {
-    "credit_card_number": "4924535014141089",
-    "credit_card_exp": "10/31",
-    "credit_card_cvv": "894"
+    "credit_card_cvv": "733"
   },
   {
     "credit_card_number": "4924535033756321",
