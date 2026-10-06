@@ -10,6 +10,21 @@ from pathlib import Path
 DEFAULT_FRIDA_PYTHON = "/Users/macbook/Library/Application Support/pipx/venvs/frida-tools/bin/python"
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def can_import_frida(python_bin: str) -> bool:
     try:
         return subprocess.run(
@@ -17,6 +32,7 @@ def can_import_frida(python_bin: str) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            env=child_env(),
         ).returncode == 0
     except OSError:
         return False
@@ -45,7 +61,15 @@ print(json.dumps([
 ], ensure_ascii=False))
 """
     try:
-        completed = subprocess.run([find_frida_python(), "-c", code], text=True, capture_output=True, check=False)
+        completed = subprocess.run(
+            [find_frida_python(), "-c", code],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            env=child_env(),
+        )
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "frida enumerate failed")
         print(completed.stdout.strip() or "[]")
@@ -56,4 +80,5 @@ print(json.dumps([
 
 
 if __name__ == "__main__":
+    configure_stdio()
     raise SystemExit(main())

@@ -41,15 +41,29 @@ CARD_COOLDOWN_LOCK_FILE = Path(
 
 @contextmanager
 def exclusive_lock(path: Path) -> Iterator[None]:
-    import fcntl
-
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def load_cards() -> list[dict]:
@@ -117,11 +131,11 @@ def pick_alternate_card(row_number: object, current_card: dict | None = None) ->
 
 
 def card_cooldown_seconds() -> float:
-    raw = os.environ.get("YAMADA_CARD_COOLDOWN_SECONDS", "30")
+    raw = os.environ.get("YAMADA_CARD_COOLDOWN_SECONDS", "20")
     try:
         seconds = float(raw)
     except (TypeError, ValueError):
-        seconds = 30.0
+        seconds = 20.0
     return max(0.0, seconds)
 
 

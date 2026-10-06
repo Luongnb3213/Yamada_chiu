@@ -25,6 +25,22 @@ DEFAULT_APP_ID = "jp.co.unisys.yamadamobile"
 DEFAULT_HOST = "com.opa334.CraneApplication"
 DEFAULT_FRIDA_PYTHON = "/Users/macbook/Library/Application Support/pipx/venvs/frida-tools/bin/python"
 
+
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 CRANE_COLUMNS = [
     "crane_container_id",
     "crane_container_name",
@@ -479,7 +495,13 @@ def candidate_frida_pythons() -> list[str]:
 def can_import_frida(python_bin: str) -> bool:
     cmd = [python_bin, "-c", "import frida"]
     try:
-        return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+        return subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=child_env(),
+        ).returncode == 0
     except OSError:
         return False
 
@@ -542,8 +564,15 @@ class CraneHostSession:
         self.frida = frida
         self.device = resolve_frida_device(frida, self.device_id, timeout=10)
 
-        self.pid = self.device.spawn([self.host])
-        self.session = self.device.attach(self.pid)
+        # Run inside SpringBoard (CraneSB/libcrane already loaded there) instead of spawning the
+        # Crane app: device.spawn() injects frida into launchd, whose crashes panic the phone.
+        # self.pid stays None so __exit__ never kills SpringBoard.
+        from phone_ram_guard import springboard
+
+        sb = springboard(self.device)
+        if sb is None:
+            raise RuntimeError("SpringBoard not running")
+        self.session = self.device.attach(sb.pid)
         self.script = self.session.create_script(CRANE_JS)
         self.script.on("message", self._on_message)
         self.script.load()
@@ -649,7 +678,15 @@ def invoke_crane_rpc(args: argparse.Namespace, action: str, **kwargs) -> Any:
             continue
         child_args.extend([f"--{key.replace('_', '-')}", str(value)])
 
-    completed = subprocess.run(child_args, text=True, capture_output=True, check=False)
+    completed = subprocess.run(
+        child_args,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+        env=child_env(),
+    )
     if completed.returncode != 0:
         stderr = completed.stderr.strip()
         stdout = completed.stdout.strip()
@@ -1119,4 +1156,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_stdio()
     raise SystemExit(main())

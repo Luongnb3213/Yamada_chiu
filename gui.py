@@ -20,6 +20,30 @@ ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_XLSX = Path.home() / "Downloads" / "Yamada_chiu_accounts.xlsx"
 
 
+def _utf8_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        proc.terminate()
+
+
 def _can_import(module: str, python_bin: str) -> bool:
     try:
         return subprocess.run(
@@ -27,6 +51,7 @@ def _can_import(module: str, python_bin: str) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            env=_utf8_env(),
         ).returncode == 0
     except OSError:
         return False
@@ -279,9 +304,12 @@ class YamadaChiuGUI(tk.Tk):
                     [self._py(), "scripts/frida_devices.py"],
                     cwd=str(ROOT_DIR),
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     check=False,
                     timeout=15,
+                    env=_utf8_env(),
                 )
                 if completed.returncode != 0:
                     raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "Không liệt kê được device.")
@@ -469,12 +497,7 @@ class YamadaChiuGUI(tk.Tk):
         with self.proc_lock:
             proc = self.current_proc
         if proc and proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except Exception:
-                proc.terminate()
+            _kill_tree(proc)
 
     def _worker(self, title: str, commands: list[list[str]]) -> None:
         try:
@@ -489,7 +512,10 @@ class YamadaChiuGUI(tk.Tk):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=1,
+                    env=_utf8_env(),
                     preexec_fn=os.setsid if hasattr(os, "setsid") else None,
                 )
                 with self.proc_lock:
@@ -498,12 +524,7 @@ class YamadaChiuGUI(tk.Tk):
                 for line in proc.stdout:
                     self._log(line.rstrip())
                     if self.stop_requested and proc.poll() is None:
-                        try:
-                            os.killpg(proc.pid, signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-                        except Exception:
-                            proc.terminate()
+                        _kill_tree(proc)
                 code = proc.wait()
                 with self.proc_lock:
                     self.current_proc = None

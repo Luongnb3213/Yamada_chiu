@@ -39,6 +39,21 @@ def quote_cmd(cmd: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in cmd)
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def run_cmd_output(cmd: list[str], title: str, stream: bool = False, timeout: int | None = None) -> str:
     print(f"\n--- {title} ---", flush=True)
     print("$ " + quote_cmd(cmd), flush=True)
@@ -48,7 +63,10 @@ def run_cmd_output(cmd: list[str], title: str, stream: bool = False, timeout: in
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
+        env=child_env(),
     )
     assert proc.stdout is not None
     try:
@@ -369,7 +387,7 @@ def append_run_event(args: argparse.Namespace, stage: str, **payload: Any) -> No
             "device_id": args.device_id,
             **payload,
         }
-        with event_path.open("a") as handle:
+        with event_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
         pass
@@ -513,6 +531,9 @@ def main() -> int:
     reg_status_val = ""
 
     try:
+        if args.device_id and args.device_id != "auto":
+            # Free phone RAM (kill leftovers, respring when low) before switching container.
+            run_cmd_output([sys.executable, "scripts/phone_ram_guard.py", "--device-id", args.device_id], "Giải phóng RAM điện thoại")
         crane_cmd = [
             sys.executable,
             "scripts/crane_container_manager.py",
@@ -785,6 +806,56 @@ def main() -> int:
                     notes="login_email_auth_failed_no_retry",
                     crane_result=crane_result,
                 )
+        elif final_state == "login_identity_missing_no_retry":
+            append_run_event(
+                args,
+                "final",
+                status="FAIL_NO_RETRY",
+                error_details="missing_login_identity_data",
+                reg_status=reg_status_val,
+                gold_status="FAIL_NO_RETRY",
+                chiu_status="FAIL_NO_RETRY",
+                notes="login_identity_missing_no_retry",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAIL_NO_RETRY",
+                    "missing_login_identity_data",
+                    reg_status=reg_status_val,
+                    gold_status="FAIL_NO_RETRY",
+                    chiu_status="FAIL_NO_RETRY",
+                    notes="login_identity_missing_no_retry",
+                    crane_result=crane_result,
+                )
+        elif final_state == "gold_not_registered_no_retry":
+            append_run_event(
+                args,
+                "final",
+                status="FAIL_NO_RETRY",
+                error_details="gold_not_registered",
+                reg_status=reg_status_val,
+                gold_status="FAIL_NO_RETRY",
+                chiu_status="FAIL_NO_RETRY",
+                notes="gold_not_registered_no_retry",
+                crane_result=crane_result,
+            )
+            if not args.defer_excel_write:
+                write_row_result(
+                    xlsx,
+                    args.sheet,
+                    args.row,
+                    "FAIL_NO_RETRY",
+                    "gold_not_registered",
+                    reg_status=reg_status_val,
+                    gold_status="FAIL_NO_RETRY",
+                    chiu_status="FAIL_NO_RETRY",
+                    notes="gold_not_registered_no_retry",
+                    crane_result=crane_result,
+                )
         elif not args.no_submit and final_state in ("store_sale_tab", "ready_for_chiu_store_sale"):
             raise FlowResultError(
                 f"DOM chưa submit One Piece: last_state={final_state}",
@@ -846,4 +917,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_stdio()
     raise SystemExit(main())

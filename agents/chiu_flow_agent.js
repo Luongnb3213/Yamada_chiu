@@ -406,9 +406,6 @@ function pageProgram(profile, options, mode) {
     return hash >>> 0;
   }
   const ONEPIECE_STORE_CHOICES = [
-    { pre: "13", area: "練馬区", shopNo: "258", shopName: "ﾃｯｸﾗﾝﾄﾞ練馬本店" },
-    { pre: "13", area: "練馬区", shopNo: "219", shopName: "ﾃｯｸﾗﾝﾄﾞ大泉学園店PC館" },
-    { pre: "13", area: "練馬区", shopNo: "809", shopName: "ﾃｯｸﾗﾝﾄﾞ平和台駅前店" },
     { pre: "13", area: "品川区", shopNo: "468", shopName: "LABI LIFE SELECT 品川大井町" },
     { pre: "13", area: "目黒区", shopNo: "230", shopName: "LABI自由が丘" },
     { pre: "13", area: "豊島区", shopNo: "7", shopName: "LABI池袋本店" },
@@ -431,8 +428,8 @@ function pageProgram(profile, options, mode) {
     return ONEPIECE_STORE_CHOICES[hashString(val("email")) % ONEPIECE_STORE_CHOICES.length];
   }
   function onepieceBannerLink() {
-    return q('#category009 a[href*="0929_lottery-pcs/notice.html"]') ||
-      (q('#banner_impression-banner_topics_0000008430') && q('#banner_impression-banner_topics_0000008430').closest("a")) ||
+    return q('#category009 a[href*="1005_lottery-pcs/notice.html"]') ||
+      (q('#banner_impression-banner_topics_0000008500') && q('#banner_impression-banner_topics_0000008500').closest("a")) ||
       qa('a').find(function (el) { return /ONE PIECE|ワンピース|抽選販売/.test(text(el) + " " + String(el.href || "")); });
   }
   function selectHasValue(select, value) {
@@ -473,16 +470,19 @@ function pageProgram(profile, options, mode) {
     return { ok: true, store: store, selectedShopNo: radio.value || store.shopNo, selectedShopLabel: found.label };
   }
   function fillOnepieceForm() {
-    const product = q('input[type="radio"][name="items[]"][value="01"]') || q('input[type="radio"][name="items[]"]');
-    if (product) {
-      product.checked = true;
-      product.dispatchEvent(new Event("change", { bubbles: true }));
-    }
+    const wantedItem = val("lottery_item_name") || "ストームエメラルダ";
+    const product = qa('input[type="radio"][name="items[]"]').find(function (el) {
+      return text(el.closest("label") || el).indexOf(wantedItem) >= 0;
+    });
+    if (!product) return { ok: false, missing: "lottery_item", wantedItem: wantedItem };
+    product.checked = true;
+    product.dispatchEvent(new Event("change", { bubbles: true }));
+    const productName = text(product.closest("label") || product).replace(/\\s*税込.*$/, "").trim();
     const store = preferredOnepieceStore();
     const selected = selectOnepieceStore(store);
     if (selected.wait) return selected;
     if (!selected.ok) return selected;
-    setField('#selected_campaign', val("selected_campaign", "onepiece_campaign"));
+    if (!String((q('#selected_campaign') || {}).value || "")) setField('#selected_campaign', productName);
     setChecked('input[name="check_privacy"]', true);
     const btn = q("button#entry") ||
       qa('button,input[type="submit"],input[type="button"]').find(function (el) {
@@ -592,7 +592,10 @@ function pageProgram(profile, options, mode) {
       const regState = registerScreen();
       if (regState) return regState;
     }
-    if ((href.indexOf("0929_lottery-pcs/notice.html") >= 0 || /ONE PIECE/.test(title + " " + b)) && q("#go-form-btn")) return "onepiece_lottery_notice";
+    // Logged-out container left on the register flow: back out to the top page so we can log in.
+    if (/action=reg001/.test(href) && q('input[name="reg_mail_address"]') && q('a[href*="module=cancel"][href*="action=can001"]')) return "register_email_input_logged_out";
+    if (/module=cancel/.test(href) && /action=can001/.test(href) && q('form[action*="action=can003"] button[type="submit"]')) return "register_cancel_confirm";
+    if ((href.indexOf("_lottery-pcs/notice.html") >= 0 || /ONE PIECE|抽選販売/.test(title + " " + b)) && q("#go-form-btn")) return "onepiece_lottery_notice";
     if (/すでにお申込み済み|申込済み|お申込み済み/.test(b) && /lotterysale001/.test(href)) return "onepiece_lottery_already_applied";
     if (q('form[action*="lotterysale001"]') && q("#pre") && q("#area") && q("#entry")) return "onepiece_lottery_apply_form";
     if (/応募確認/.test(title + " " + b) && /応募を確定する/.test(b) && q('form[action*="lotterysale002"]')) return "onepiece_lottery_apply_confirm";
@@ -635,7 +638,20 @@ function pageProgram(profile, options, mode) {
     email: val("email")
   }));
 
+  // Gold purchase is disabled: never open/submit the gold card payment pages.
+  if (/^(mypage_gold_not_registered|gold_membership_benefits|gold_payment_select|gold_credit_card_payment|gold_payment_confirm)$/.test(state)) {
+    return JSON.stringify(result("gold_not_registered_no_retry", "fail_no_retry", { noRetry: true, reason: "gold_not_registered", fromState: state }));
+  }
+
   switch (state) {
+    case "register_email_input_logged_out": {
+      navigateElement(q('a[href*="module=cancel"][href*="action=can001"]'));
+      return JSON.stringify(result(state, "back_to_first_screen"));
+    }
+    case "register_cancel_confirm": {
+      if (options.submit !== false && !options.dryRun) clickElement(q('form[action*="action=can003"] button[type="submit"]'));
+      return JSON.stringify(result(state, "confirm_back_to_first_screen"));
+    }
     case "member_register_top_logged_out": {
       const link = q('a[href*="changephone"][href*="chg001"]') || qa('a').find(function (el) { return text(el).indexOf("ログイン") >= 0; });
       if (!link) return JSON.stringify(fail(state, "missing_login_link"));
@@ -669,7 +685,7 @@ function pageProgram(profile, options, mode) {
         { name: "pin", value: pin },
         { name: "phone", value: phone }
       ]);
-      if (missing.length) return JSON.stringify(fail(state, "missing_login_identity_data", { missing: missing }));
+      if (missing.length) return JSON.stringify(result("login_identity_missing_no_retry", "fail_no_retry", { noRetry: true, reason: "missing_login_identity_data", missing: missing }));
       setChecked('input[name="register"][value="mail_address"]', true);
       setField('input[name="mail_address"]', email);
       setField('input[name="password"]', pin);
@@ -990,7 +1006,7 @@ async function runInternal(idx, profile, options) {
       continue;
     }
     history.push(res);
-    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable" || res.state === "gold_card_unusable_no_retry" || res.state === "login_identity_mismatch_no_retry" || res.state === "login_help_redirect_no_retry" || res.state === "login_email_auth_failed_no_retry") break;
+    if (!res.ok || res.state === "chiu_onepiece_submitted" || res.state === "onepiece_lottery_confirm_ready" || res.state === "ymd_common_error_no_retry" || res.state === "gold_card_unusable" || res.state === "gold_card_unusable_no_retry" || res.state === "login_identity_mismatch_no_retry" || res.state === "login_help_redirect_no_retry" || res.state === "login_email_auth_failed_no_retry" || res.state === "gold_not_registered_no_retry" || res.state === "login_identity_missing_no_retry") break;
     if (res.action === "done") break;
     const wait = await waitAfterActionInternal(idx || 0, res, opts);
     if (wait && (opts.includeWaits || !wait.ok)) history.push(wait);

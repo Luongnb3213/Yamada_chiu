@@ -16,6 +16,21 @@ DEFAULT_FRIDA_PYTHON = "/Users/macbook/Library/Application Support/pipx/venvs/fr
 DEFAULT_APP_ID = "jp.co.unisys.yamadamobile"
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def import_frida():
     try:
         import frida  # type: ignore
@@ -51,6 +66,7 @@ def can_import_frida(python_bin: str) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            env=child_env(),
         ).returncode == 0
     except OSError:
         return False
@@ -166,9 +182,18 @@ def attach_or_launch(device, args: argparse.Namespace, *, force_launch: bool = F
 
     if args.bundle_id:
         try:
-            pid = device.spawn([args.bundle_id])
-            session = device.attach(pid)
-            device.resume(pid)
+            from phone_ram_guard import launch_app
+
+            pid = launch_app(device, args.bundle_id)
+            # Attaching the instant the process appears fails ("early end-of-stream"); retry ~1s.
+            for attempt in range(10):
+                time.sleep(1.0)
+                try:
+                    session = device.attach(pid)
+                    break
+                except Exception:
+                    if attempt == 9:
+                        raise
             print(f"[chiu-dom] Đã mở app {args.bundle_id} pid={pid}.", file=sys.stderr)
             time.sleep(max(0, float(args.launch_wait)))
             return session, True
@@ -237,9 +262,9 @@ def run_with_frida(args: argparse.Namespace) -> Any:
                     ex = script.exports_sync
                     first_screen = wait_for_webview_content(ex, args.initial_wait_timeout_ms, args.poll_ms)
                 if is_not_ready_start_screen(first_screen):
-                    raise RuntimeError(
-                        "Chưa thấy WKWebView sau khi mở/attach app. "
-                        "Thử mở app Yamada trên iPhone, chờ màn Home/web hiện ra rồi chạy lại."
+                    print(
+                        "[chiu-dom] Màn đầu chưa đọc được state; tiếp tục để flow tự poll thêm.",
+                        file=sys.stderr,
                     )
 
         if args.action == "screen":
@@ -314,7 +339,15 @@ def main() -> int:
         if import_frida() is None and not args._child:
             python_bin = find_frida_python()
             cmd = [python_bin, str(Path(__file__).resolve()), *sys.argv[1:], "--_child"]
-            completed = subprocess.run(cmd, text=True, capture_output=True, check=False)
+            completed = subprocess.run(
+                cmd,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+                env=child_env(),
+            )
             if completed.stdout:
                 print(completed.stdout, end="")
             if completed.stderr:
@@ -330,4 +363,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_stdio()
     raise SystemExit(main())

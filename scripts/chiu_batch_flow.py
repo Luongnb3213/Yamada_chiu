@@ -56,6 +56,21 @@ def quote_cmd(cmd: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in cmd)
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def choose_sheet(wb, sheet_name: str):
     if sheet_name in wb.sheetnames:
         return wb[sheet_name]
@@ -162,6 +177,7 @@ def frida_python() -> str:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
+                env=child_env(),
             )
             if completed.returncode == 0:
                 return candidate
@@ -176,7 +192,15 @@ def list_usb_devices() -> list[dict]:
         "print(json.dumps([{'id':d.id,'name':d.name,'type':d.type} "
         "for d in frida.enumerate_devices() if d.type=='usb']))"
     )
-    completed = subprocess.run([frida_python(), "-c", code], text=True, capture_output=True, check=False)
+    completed = subprocess.run(
+        [frida_python(), "-c", code],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+        env=child_env(),
+    )
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "Không liệt kê được Frida devices.")
     return json.loads(completed.stdout or "[]")
@@ -237,7 +261,7 @@ def atomic_save_workbook(wb, xlsx: Path) -> None:
 def collect_run_events(run_dir: Path) -> dict[tuple[str, int], dict]:
     records: dict[tuple[str, int], dict] = {}
     for path in sorted(run_dir.glob("*.jsonl")):
-        with path.open("r") as handle:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 line = line.strip()
                 if not line:
@@ -355,6 +379,18 @@ def build_parser() -> argparse.ArgumentParser:
         "Không bật thì giữ flow cũ (reuse container active, chỉ đăng nhập nếu cần).",
     )
     parser.add_argument("--max-attempts", type=int, default=2, help="Max attempts per row, including the first run.")
+    parser.add_argument(
+        "--respring-every",
+        type=int,
+        default=5,
+        help="Clean-respring each phone after every N rows it ran (frees RAM before jetsam storms panic launchd). 0 = off.",
+    )
+    parser.add_argument("--row-range", default="", help="Only run rows A-B (inclusive), e.g. 640-969.")
+    parser.add_argument(
+        "--create-container",
+        action="store_true",
+        help="Always create a new Crane container per row (login flow, no register). For moving rows to another phone.",
+    )
     parser.add_argument("--list-only", action="store_true")
     parser.add_argument("--direct-excel-write", action="store_true", help="Old mode: each worker writes Excel after every row.")
     parser.add_argument("--merge-run-dir", default="", help="Merge a previous batch run_dir JSONL into Excel, then exit.")
@@ -391,6 +427,9 @@ def main() -> int:
     allowed_device_ids = set(device_ids)
     balance_device_ids = device_ids if len(device_ids) > 1 else None
     sheet, tasks = runnable_rows(xlsx, args.sheet, args.limit, allowed_device_ids, balance_device_ids)
+    if args.row_range:
+        lo, hi = (int(x) for x in args.row_range.split("-"))
+        tasks = [task for task in tasks if lo <= int(task["row"]) <= hi]
     print(f"[batch] Sheet={sheet} | số nick={'full' if args.limit == 0 else args.limit} | chọn {len(tasks)} row", flush=True)
     print(f"[batch] Devices: {', '.join(device_ids)}", flush=True)
     if allowed_device_ids is not None:
@@ -430,6 +469,8 @@ def main() -> int:
         if args.new_container:
             # Checkbox "Tạo container mới mỗi nick": luôn tạo container Crane mới,
             # bỏ qua container cũ trên row; crane ghi lại containerID + deviceID ra Excel.
+            queued_task["container_mode"] = "create"
+        elif args.create_container:
             queued_task["container_mode"] = "create"
         else:
             queued_task["container_mode"] = (
@@ -497,7 +538,10 @@ def main() -> int:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
+                env=child_env(),
             )
             assert proc.stdout is not None
             output_lines: list[str] = []
@@ -519,12 +563,28 @@ def main() -> int:
     counter_lock = threading.Lock()
     counter = {"value": 0}
 
+    def respring(device_id: str) -> None:
+        cmd = [sys.executable, "scripts/phone_ram_guard.py", "--device-id", device_id, "--force-respring"]
+        log(f"\n[batch][{device_label(device_id)}] Respring định kỳ (mỗi {args.respring_every} nick)")
+        try:
+            done = subprocess.run(
+                cmd, cwd=str(ROOT_DIR), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", env=child_env(), timeout=180,
+            )
+            log(f"[batch][{device_label(device_id)}] {(done.stdout + done.stderr).strip().splitlines()[-1:]}")
+        except Exception as exc:
+            log(f"[batch][{device_label(device_id)}] Respring lỗi: {exc}")
+
     def worker(device_id: str) -> None:
+        rows_done = 0
         while not stop_all.is_set():
             try:
                 task = task_queues[device_id].get_nowait()
             except queue.Empty:
                 return
+            if args.respring_every > 0 and rows_done and rows_done % args.respring_every == 0:
+                respring(device_id)
+            rows_done += 1
             with counter_lock:
                 counter["value"] += 1
                 index = counter["value"]
@@ -536,8 +596,9 @@ def main() -> int:
                 if final_code != 0:
                     failures.append((row, final_code))
                     if any(hint in final_output for hint in STOP_ON_ERROR_HINTS):
-                        stop_all.set()
-                        log(f"[batch][{label}] Dừng batch vì lỗi hạ tầng ở row {row} sau {args.max_attempts} attempt.")
+                        # Only this device stops; other devices keep running.
+                        log(f"[batch][{label}] Dừng máy này vì lỗi hạ tầng ở row {row} sau {args.max_attempts} attempt.")
+                        return
                     else:
                         log(f"[batch][{label}] Row {row} lỗi exit={final_code} sau {args.max_attempts} attempt, chuyển row tiếp theo.")
                 else:
@@ -576,4 +637,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    configure_stdio()
     raise SystemExit(main())
